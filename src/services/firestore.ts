@@ -1,8 +1,15 @@
 import { 
   doc, 
   setDoc, 
-  getDoc, 
   updateDoc, 
+  deleteDoc,
+  collection,
+  getDocs,
+  query,
+  where,
+  orderBy,
+  limit,
+  Timestamp,
   onSnapshot,
   DocumentSnapshot
 } from 'firebase/firestore';

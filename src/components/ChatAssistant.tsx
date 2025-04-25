@@ -39,9 +39,13 @@ interface ChatAssistantProps {
 }
 
 // Initialize Gemini API in a secure way
-// We're using a fallback value in case the env variable isn't loaded correctly
-const API_KEY = 'AIzaSyDy_MrOlVdwRI7LjywuqAOnerM3g9tn0Og';
+const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent';
+
+// Validate API key
+if (!API_KEY) {
+  console.error('Gemini API key is not configured. Please check your environment variables.');
+}
 
 // Function to convert markdown to plain text
 const convertMarkdownToPlainText = (markdown: string): string => {

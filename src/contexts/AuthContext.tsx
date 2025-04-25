@@ -17,6 +17,7 @@ import { auth } from '../config/firebase';
 interface AuthContextType {
   auth: Auth;
   currentUser: User | null;
+  loading: boolean;
   signup: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, name: string) => Promise<User>;
   login: (email: string, password: string) => Promise<UserCredential>;
@@ -104,6 +105,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const value = {
     auth,
     currentUser,
+    loading,
     signup,
     register,
     login,

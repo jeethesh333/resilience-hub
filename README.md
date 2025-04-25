@@ -36,6 +36,42 @@ npm run dev
 - `npm run lint:fix` - Fix ESLint issues
 - `npm run lint:watch` - Watch for ESLint issues
 
+## Deployment
+
+To deploy the application to Firebase Hosting:
+
+1. Install Firebase CLI globally:
+```bash
+npm install -g firebase-tools
+```
+
+2. Login to Firebase:
+```bash
+firebase login
+```
+
+3. Initialize Firebase in your project:
+```bash
+firebase init
+```
+- Select 'Hosting'
+- Choose your Firebase project
+- Use 'dist' as your public directory
+- Configure as a single-page app: Yes
+- Don't overwrite index.html: No
+
+4. Build the application:
+```bash
+npm run build
+```
+
+5. Deploy to Firebase:
+```bash
+firebase deploy
+```
+
+Your app will be deployed to `https://<your-project-id>.web.app`
+
 ## Environment Variables
 
 This project uses the following environment variables:
