@@ -1,0 +1,49 @@
+<svg width="500" height="400" viewBox="0 0 500 400" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background Shapes -->
+  <circle cx="250" cy="200" r="150" fill="#E6F7F5" />
+  <circle cx="100" cy="320" r="50" fill="#FFE8D6" />
+  <circle cx="400" cy="80" r="70" fill="#F3F6FF" />
+  
+  <!-- Calendar -->
+  <rect x="150" y="100" width="200" height="200" rx="10" fill="white" stroke="#2EC4B6" stroke-width="3"/>
+  <rect x="150" y="100" width="200" height="40" rx="10" fill="#2EC4B6"/>
+  
+  <!-- Calendar Days -->
+  <circle cx="190" cy="170" r="15" fill="#FFE8D6" stroke="#FF9F1C" stroke-width="2"/>
+  <circle cx="230" cy="170" r="15" fill="#FFE8D6" stroke="#FF9F1C" stroke-width="2"/>
+  <circle cx="270" cy="170" r="15" fill="#FFE8D6" stroke="#FF9F1C" stroke-width="2"/>
+  <circle cx="310" cy="170" r="15" fill="#2EC4B6" stroke="#2EC4B6" stroke-width="2"/>
+  
+  <circle cx="190" cy="220" r="15" fill="#FFE8D6" stroke="#FF9F1C" stroke-width="2"/>
+  <circle cx="230" cy="220" r="15" fill="#2EC4B6" stroke="#2EC4B6" stroke-width="2"/>
+  <circle cx="270" cy="220" r="15" fill="#E6F7F5" stroke="#2EC4B6" stroke-width="2"/>
+  <circle cx="310" cy="220" r="15" fill="#E6F7F5" stroke="#2EC4B6" stroke-width="2"/>
+  
+  <circle cx="190" cy="270" r="15" fill="#E6F7F5" stroke="#2EC4B6" stroke-width="2"/>
+  <circle cx="230" cy="270" r="15" fill="#E6F7F5" stroke="#2EC4B6" stroke-width="2"/>
+  <circle cx="270" cy="270" r="15" fill="#E6F7F5" stroke="#2EC4B6" stroke-width="2"/>
+  <circle cx="310" cy="270" r="15" fill="#E6F7F5" stroke="#2EC4B6" stroke-width="2"/>
+  
+  <!-- Check Marks -->
+  <path d="M304 170L310 176L320 166" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M224 220L230 226L240 216" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  
+  <!-- Plant Growth Illustration -->
+  <path d="M400 280C400 280 420 250 440 280" stroke="#2EC4B6" stroke-width="3" stroke-linecap="round"/>
+  <path d="M440 280C440 280 460 240 480 280" stroke="#2EC4B6" stroke-width="3" stroke-linecap="round"/>
+  <rect x="435" y="280" width="10" height="40" fill="#FF9F1C" rx="5"/>
+  
+  <!-- Star burst -->
+  <path d="M100 100L105 80L110 100L130 105L110 110L105 130L100 110L80 105L100 100Z" fill="#FF9F1C"/>
+  
+  <!-- Progress Bar -->
+  <rect x="150" y="320" width="200" height="20" rx="10" fill="#E6F7F5" stroke="#2EC4B6" stroke-width="2"/>
+  <rect x="150" y="320" width="140" height="20" rx="10" fill="#2EC4B6"/>
+  
+  <!-- Motivational Icons -->
+  <circle cx="60" cy="220" r="20" fill="#FFE8D6"/>
+  <path d="M50 220L58 228L70 216" stroke="#FF9F1C" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  
+  <circle cx="60" cy="170" r="20" fill="#E6F7F5"/>
+  <path d="M60 160V180M50 170H70" stroke="#2EC4B6" stroke-width="3" stroke-linecap="round"/>
+</svg> 
