@@ -2,18 +2,18 @@ import {
   doc, 
   setDoc, 
   updateDoc, 
-  deleteDoc,
-  collection,
-  getDocs,
-  query,
-  where,
-  orderBy,
-  limit,
-  Timestamp,
+  // deleteDoc,
+  // collection,
+  // getDocs,
+  // query,
+  // where,
+  // orderBy,
+  // limit,
+  // Timestamp,
   onSnapshot,
   DocumentSnapshot
 } from 'firebase/firestore';
-import { db } from '../config/firebase';
+import { db } from './firebase';
 import { User, Challenge } from '../types';
 
 // User Operations
@@ -103,6 +103,43 @@ export const resetUserData = async (uid: string, name: string) => {
     });
   } catch (error) {
     console.error('Error resetting user data:', error);
+    throw error;
+  }
+};
+
+// Update challenge duration
+export const updateChallengeDuration = async (uid: string, challengeId: string, newDuration: number) => {
+  try {
+    const userData = await getUserData(uid);
+    if (!userData) {
+      throw new Error('User not found');
+    }
+    
+    const updatedChallenges = userData.challenges.map(challenge => 
+      challenge.id === challengeId 
+        ? { ...challenge, duration: newDuration } 
+        : challenge
+    );
+    
+    await updateChallenges(uid, updatedChallenges);
+  } catch (error) {
+    console.error('Error updating challenge duration:', error);
+    throw error;
+  }
+};
+
+// Delete a user challenge
+export const deleteUserChallenge = async (uid: string, challengeId: string) => {
+  try {
+    const userData = await getUserData(uid);
+    if (!userData) {
+      throw new Error('User not found');
+    }
+    
+    const updatedChallenges = userData.challenges.filter(challenge => challenge.id !== challengeId);
+    await updateChallenges(uid, updatedChallenges);
+  } catch (error) {
+    console.error('Error deleting challenge:', error);
     throw error;
   }
 }; 

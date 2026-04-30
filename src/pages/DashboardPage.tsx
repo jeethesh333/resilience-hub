@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -31,13 +31,13 @@ import {
   CircularProgress,
   Fab,
   Grow,
-  ButtonBase
+  ButtonBase,
+  InputAdornment
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import EditNoteIcon from '@mui/icons-material/EditNote';
-import HistoryIcon from '@mui/icons-material/History';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import FitnessCenterIcon from '@mui/icons-material/FitnessCenter';
@@ -76,13 +76,28 @@ import BlockIcon from '@mui/icons-material/Block';
 import LogoutIcon from '@mui/icons-material/Logout';
 import AccountCircleIcon from '@mui/icons-material/AccountCircle';
 import MenuIcon from '@mui/icons-material/Menu';
+import DirectionsWalkIcon from '@mui/icons-material/DirectionsWalk';
+import LocalDrinkIcon from '@mui/icons-material/LocalDrink';
+import HotelIcon from '@mui/icons-material/Hotel';
+import EmojiObjectsIcon from '@mui/icons-material/EmojiObjects';
+import WbSunnyIcon from '@mui/icons-material/WbSunny';
+import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import { Challenge, User } from '../types';
 import TypingAnimation from '../components/TypingAnimation';
 import ChatAssistant from '../components/ChatAssistant';
-import ProgressAnalytics from '../components/ProgressAnalytics';
 import { useAuth } from '../contexts/AuthContext';
-import { getUserData, updateUserData, updateChallenges, updateDailyNotes, resetUserData, createUserDocument } from '../services/firestore';
-import { styled } from '@mui/material/styles';
+import { getUserData, updateChallenges, updateDailyNotes, createUserDocument } from '../services/firestore';
+import useMediaQuery from '@mui/material/useMediaQuery';
+import NotesHistoryPage from './NotesHistoryPage';
+import ClickAwayListener from '@mui/material/ClickAwayListener';
+import Fuse from 'fuse.js';
+import PeopleIcon from '@mui/icons-material/People';
+import { upsertToPinecone, deleteFromPinecone } from '../utils/api';
+import { upsertChallengeData, upsertNoteData, upsertDailyReflection } from '../services/pinecone';
+import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { db } from '../services/firebase';
+import { updatePineconeNote } from '../utils/api';
+import { Note } from '../types';
 
 interface MilestoneAchievement {
   percentage: number;
@@ -99,6 +114,13 @@ const milestones: MilestoneAchievement[] = [
     title: "First Step",
     description: "You've started your journey! The hardest part is beginning.",
     color: "#00b4d8"
+  },
+  {
+    percentage: 0,
+    icon: <LocalFireDepartmentIcon />,
+    title: "Comeback Champion",
+    description: "Welcome back! Getting back on track shows true resilience.",
+    color: "#ff9f1c"
   },
   {
     percentage: 7,
@@ -137,6 +159,26 @@ const milestones: MilestoneAchievement[] = [
   }
 ];
 
+
+function migrateNotes(notes: { [key: string]: any }): { [key: string]: Note } {
+  const migrated: { [key: string]: Note } = {};
+  for (const [day, value] of Object.entries(notes)) {
+    if (typeof value === 'string') {
+      migrated[day] = { content: value, vectorId: '' }; // vectorId unknown for legacy notes
+    } else {
+      migrated[day] = value;
+    }
+  }
+  return migrated;
+}
+
+
+function toTitleCase(str: string) {
+  return str.split(' ')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+}
+
 // ErrorBoundary component to catch errors in child components
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
   constructor(props: { children: React.ReactNode }) {
@@ -169,10 +211,259 @@ const ScrollToTop: React.FC = () => {
   return null;
 };
 
+function getLocalDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+// Define categories with keywords and icons
+const iconCategories = [
+  { 
+    category: "walking",
+    keywords: ["walk", "walking", "steps", "step", "10k", "5k", "run", "running", "jog", "jogging", "hike", "hiking", "stroll", "trek"], 
+    weight: 1,
+    icon: <DirectionsWalkIcon /> 
+  },
+  { 
+    category: "dental",
+    keywords: ["brush", "brushing", "teeth", "tooth", "floss", "dental", "oral", "mouthwash", "toothpaste"], 
+    weight: 1,
+    icon: <ToothbrushIcon /> 
+  },
+  { 
+    category: "hydration",
+    keywords: ["water", "hydrate", "hydration", "drink", "fluid", "liquids", "h2o", "beverage", "thirst"], 
+    weight: 1,
+    icon: <LocalDrinkIcon /> 
+  },
+  { 
+    category: "reading",
+    keywords: ["read", "reading", "book", "books", "pages", "novel", "literature", "articles", "stories", "ebook"], 
+    weight: 1,
+    icon: <MenuBookIcon /> 
+  },
+  { 
+    category: "meditation",
+    keywords: ["meditate", "meditation", "mindful", "mindfulness", "breath", "breathing", "relax", "calm", "zen", "peace", "still", "presence"], 
+    weight: 1,
+    icon: <SelfImprovementIcon /> 
+  },
+  { 
+    category: "fitness",
+    keywords: ["workout", "gym", "exercise", "fitness", "training", "pushup", "pushups", "squat", "lift", "weights", "cardio", "muscle", "strength", "train"], 
+    weight: 1,
+    icon: <FitnessCenterIcon /> 
+  },
+  { 
+    category: "sleep",
+    keywords: ["sleep", "bed", "rest", "nap", "early", "night", "bedtime", "snooze", "slumber", "zzzz"], 
+    weight: 1,
+    icon: <HotelIcon /> 
+  },
+  { 
+    category: "shower",
+    keywords: ["shower", "bath", "wash", "cold shower", "bathing", "cleanse", "ice bath", "plunge"], 
+    weight: 1,
+    icon: <ShowerIcon /> 
+  },
+  { 
+    category: "gratitude",
+    keywords: ["gratitude", "thankful", "thank", "appreciate", "appreciation", "grateful", "blessing", "content"], 
+    weight: 1,
+    icon: <FavoriteIcon /> 
+  },
+  { 
+    category: "journaling",
+    keywords: ["journal", "journaling", "write", "writing", "diary", "note", "log", "reflect", "reflection", "document"], 
+    weight: 1,
+    icon: <EditNoteIcon /> 
+  },
+  { 
+    category: "learning",
+    keywords: ["learn", "learning", "study", "studying", "education", "course", "language", "practice", "skill", "knowledge", "tutorial", "lesson", "class"], 
+    weight: 1,
+    icon: <EmojiObjectsIcon /> 
+  },
+  { 
+    category: "prayer",
+    keywords: ["prayer", "pray", "spiritual", "worship", "faith", "devotion", "church", "religious", "temple", "mosque", "meditate"], 
+    weight: 1,
+    icon: <WbSunnyIcon /> 
+  },
+  { 
+    category: "abstinence", 
+    keywords: ["quit", "stop", "abstain", "nofap", "discipline", "avoid", "refrain", "resist", "temptation", "addiction", "habit"], 
+    weight: 1,
+    icon: <VisibilityOffIcon /> 
+  },
+  { 
+    category: "diet",
+    keywords: ["food", "eat", "eating", "diet", "nutrition", "meal", "healthy", "vegetables", "cooking", "calories", "fasting", "fast"], 
+    weight: 1,
+    icon: <RestaurantIcon /> 
+  },
+  { 
+    category: "social",
+    keywords: ["friend", "family", "social", "connect", "relationship", "talk", "message", "call", "visit", "conversation"], 
+    weight: 1,
+    icon: <PeopleIcon /> 
+  },
+  { 
+    category: "coding",
+    keywords: ["code", "coding", "program", "programming", "develop", "development", "software", "app", "website", "javascript", "python", "java"], 
+    weight: 1,
+    icon: <CodeIcon /> 
+  },
+  { 
+    category: "creative",
+    keywords: ["art", "draw", "paint", "creative", "craft", "design", "music", "sing", "play", "instrument", "create"], 
+    weight: 1,
+    icon: <PaletteIcon /> 
+  },
+];
+
+// Create a flattened array of all keywords for fuzzy searching
+const allKeywords = iconCategories.flatMap(category => 
+  category.keywords.map(keyword => ({
+    keyword,
+    category: category.category,
+    weight: category.weight || 1
+  }))
+);
+
+// Advanced options for better fuzzy matching
+const fuseOptions = {
+  includeScore: true,
+  keys: ['keyword'],
+  // Lowering threshold for more precise matching
+  threshold: 0.3, 
+  // Add location and distance factors to improve matching
+  location: 0,
+  distance: 100,
+  // Add weight to control which fields matter more in scoring
+  fieldNormWeight: 1,
+  // Use advanced weighted search for better results
+  useExtendedSearch: true,
+  // Sort results by score
+  shouldSort: true,
+  // Find all matches but limit to top 3
+  findAllMatches: true,
+  // Token separators for better word matching
+  tokenize: true,
+  matchAllTokens: false,
+  // Support for multiple identical matches
+  includeMatches: true,
+  minMatchCharLength: 2
+};
+
+// Initialize Fuse instance for fuzzy matching
+const fuse = new Fuse(allKeywords, fuseOptions);
+
+// Helper function to preprocess challenge name for better matching
+function preprocessChallengeName(name: string): string {
+  if (!name) return '';
+  
+  // Convert to lowercase
+  let processed = name.toLowerCase();
+  
+  // Remove common words that don't help with matching
+  const stopWords = ['a', 'an', 'the', 'and', 'or', 'but', 'for', 'with', 'at', 'by', 'to', 'challenge'];
+  stopWords.forEach(word => {
+    processed = processed.replace(new RegExp(`\\b${word}\\b`, 'g'), ' ');
+  });
+  
+  // Remove extra whitespace
+  processed = processed.replace(/\s+/g, ' ').trim();
+  
+  return processed;
+}
+
+// Function to get an icon for a challenge based on advanced fuzzy matching
+function getChallengeIcon(challengeName: string) {
+  if (!challengeName) return <PsychologyIcon />;
+  
+  // Preprocess the challenge name
+  const processedName = preprocessChallengeName(challengeName);
+  
+  // If nothing left after preprocessing
+  if (!processedName) return <PsychologyIcon />;
+  
+  // Extract key words/tokens for individual matching
+  const words = processedName.split(' ').filter(word => word.length > 2);
+  
+  // For very short inputs, search directly
+  if (words.length === 0 || (words.length === 1 && words[0].length < 4)) {
+    const result = fuse.search(processedName);
+    if (result.length > 0) {
+      const bestMatch = result[0].item;
+      const matchedCategory = bestMatch.category;
+      const categoryEntry = iconCategories.find(c => c.category === matchedCategory);
+      if (categoryEntry) return categoryEntry.icon;
+    }
+    return <PsychologyIcon />;
+  }
+  
+  // For longer inputs, try both whole phrase and individual important words
+  const directResult = fuse.search(processedName);
+  
+  // Also search each word separately to find the most relevant match
+  const wordResults = words.map(word => ({
+    word,
+    results: fuse.search(word)
+  })).filter(result => result.results.length > 0);
+  
+  // Rank matches by score and pick the best category
+  const categoryScores: Record<string, number> = {};
+  
+  // Add direct phrase match scores (weighted more heavily)
+  directResult.slice(0, 3).forEach(result => {
+    const category = result.item.category;
+    const score = 1 - (result.score || 0.5); // Convert to 0-1 range where 1 is best
+    categoryScores[category] = (categoryScores[category] || 0) + (score * 2); // Weight phrase matches higher
+  });
+  
+  // Add individual word match scores
+  wordResults.forEach(wordResult => {
+    const topMatch = wordResult.results[0];
+    if (topMatch) {
+      const category = topMatch.item.category;
+      const score = 1 - (topMatch.score || 0.5);
+      categoryScores[category] = (categoryScores[category] || 0) + score;
+    }
+  });
+  
+  // Find the category with the highest score
+  let bestCategory = '';
+  let highestScore = 0;
+  
+  Object.entries(categoryScores).forEach(([category, score]) => {
+    if (score > highestScore) {
+      highestScore = score;
+      bestCategory = category;
+    }
+  });
+  
+  // If we found a good match
+  if (bestCategory && highestScore > 0.3) {
+    const categoryEntry = iconCategories.find(c => c.category === bestCategory);
+    if (categoryEntry) return categoryEntry.icon;
+  }
+  
+  // Fallback to default
+  return <PsychologyIcon />;
+}
+
 const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
   const { currentUser, logout } = useAuth();
-  const [userData, setUserData] = useState<User>({ name: '', challenges: [], dailyNotes: {} });
+  const [userData, setUserData] = useState<User>({ 
+    uid: currentUser?.uid || '', 
+    name: '', 
+    challenges: [], 
+    dailyNotes: {} 
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hasShownWelcome, setHasShownWelcome] = useState(() => {
@@ -193,6 +484,7 @@ const DashboardPage: React.FC = () => {
   const [selectedChallengeId, setSelectedChallengeId] = useState<string | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [challengeToDelete, setChallengeToDelete] = useState<string | null>(null);
+  const [deleteNoteDialogOpen, setDeleteNoteDialogOpen] = useState(false);
   const [showMilestone, setShowMilestone] = useState<{
     challengeId: string;
     milestone: MilestoneAchievement;
@@ -203,18 +495,97 @@ const DashboardPage: React.FC = () => {
   const [isFirstVisit, setIsFirstVisit] = useState(() => {
     return !localStorage.getItem('hasVisitedDashboard');
   });
-  const [lastKnownDate, setLastKnownDate] = useState(() => {
-    return localStorage.getItem('lastKnownDate') || new Date().toISOString().split('T')[0];
-  });
-  const today = new Date().toISOString().split('T')[0];
+  const [lastKnownDate, setLastKnownDate] = useState<string>(localStorage.getItem('lastKnownDate') || getLocalDateKey());
+  const today = useMemo(() => {
+    const now = new Date();
+    return getLocalDateKey(now);
+  }, []);
   const [signOutDialogOpen, setSignOutDialogOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [noteDialogOpen, setNoteDialogOpen] = useState(false);
+  const [selectedChallengeForNote, setSelectedChallengeForNote] = useState<Challenge | null>(null);
+  const [scrolled, setScrolled] = useState(false);
+  const [editTodayNoteDialogOpen, setEditTodayNoteDialogOpen] = useState(false);
+  const [editTodayNote, setEditTodayNote] = useState('');
+  const [editTodayChallengeId, setEditTodayChallengeId] = useState<string | null>(null);
+  const [previewChallenge, setPreviewChallenge] = useState<Challenge | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [cellDialogOpen, setCellDialogOpen] = useState(false);
+  const [cellDialogContent, setCellDialogContent] = useState<{date: string, note?: string} | null>(null);
+  const isMobile = useMediaQuery('(max-width:600px)');
+  const [deleteAllNotesDialogOpen, setDeleteAllNotesDialogOpen] = useState(false);
+  const [deleteLogDialogOpen, setDeleteLogDialogOpen] = useState(false);
+  const [logToDelete, setLogToDelete] = useState<{ challengeId: string; day: number } | null>(null);
 
-  // Function to convert string to title case
-  const toTitleCase = (str: string) => {
-    return str.split(' ')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-      .join(' ');
+  const handleSignOut = () => {
+    setSignOutDialogOpen(true);
+  };
+
+  const confirmSignOut = async () => {
+    try {
+      await logout();
+      navigate('/');
+    } catch (error) {
+      console.error('Error signing out:', error);
+    }
+  };
+
+  // Function to delete all records from Pinecone
+  const handleDeleteAllPineconeRecords = async () => {
+    if (!currentUser) return;
+    try {
+      // Delete all records by using the user ID as prefix
+      await deleteFromPinecone({ prefix: currentUser.uid });
+      alert('All Pinecone records have been deleted successfully!');
+    } catch (error) {
+      console.error('Error deleting Pinecone records:', error);
+      alert('Failed to delete Pinecone records. Please try again.');
+    }
+  };
+
+  // Define menu actions
+  const menuActions = [
+    { icon: <AddIcon />, name: 'Add Challenge', onClick: () => setOpenDialog(true) },
+    { icon: <AccountCircleIcon />, name: 'Profile', onClick: () => navigate('/profile') },
+    { icon: <RefreshIcon />, name: 'Reset All Challenges', onClick: () => setResetDialogOpen(true), color: 'error' },
+    { icon: <DeleteIcon />, name: 'Delete All Daily Reflection Notes', onClick: () => setDeleteAllNotesDialogOpen(true), color: 'error' },
+    { icon: <DeleteIcon />, name: 'Delete All Pinecone Records', onClick: handleDeleteAllPineconeRecords, color: 'error' },
+    { icon: <LogoutIcon />, name: 'Sign Out', onClick: handleSignOut }
+  ];
+
+  // Add this function around line 615, just before loadUserData
+  const upsertHistoricalData = async (userData: User) => {
+    try {
+      console.log('Starting historical data upload...'); // Add this
+      // Upsert historical challenges
+      if (userData.challenges) {
+        console.log(`Uploading ${userData.challenges.length} challenges...`); // Add this
+        for (const challenge of userData.challenges) {
+          console.log(`Upserting challenge: ${challenge.name}`); // Add this
+          await upsertChallengeData(userData.uid, challenge);
+          
+          // Upsert historical notes for each challenge
+          if (challenge.notes) {
+            console.log(`Upserting ${Object.keys(challenge.notes).length} notes for challenge ${challenge.name}`); // Add this
+            for (const [dayNumber, noteObj] of Object.entries(challenge.notes)) {
+              // noteObj is of type Note
+              await upsertNoteData(userData.uid, challenge.id, parseInt(dayNumber), noteObj.content);
+            }
+          }
+        }
+      }
+
+      // Upsert historical daily reflections
+      if (userData.dailyNotes) {
+        console.log(`Upserting ${Object.keys(userData.dailyNotes).length} daily reflections...`); // Add this
+        for (const [date, reflection] of Object.entries(userData.dailyNotes)) {
+          await upsertDailyReflection(userData.uid, date, reflection);
+        }
+      }
+      console.log('Historical data upload complete!'); // Add this
+    } catch (error) {
+      console.error('Error upserting historical data:', error);
+    }
   };
 
   // Load user data from Firestore
@@ -228,12 +599,16 @@ const DashboardPage: React.FC = () => {
       try {
         setLoading(true);
         setError(null);
-        const data = await getUserData(currentUser.uid);
-        if (data) {
-          setUserData(data);
+        const userDocRef = doc(db, 'users', currentUser.uid);
+        const userDoc = await getDoc(userDocRef);
+        
+        if (userDoc.exists()) {
+          const userData = userDoc.data() as User;
+          setUserData(userData);
         } else {
           // Initialize user data if it doesn't exist
-          const initialData = {
+          const initialData: User = {
+            uid: currentUser.uid,
             name: currentUser.displayName || '',
             challenges: [],
             dailyNotes: {}
@@ -259,44 +634,784 @@ const DashboardPage: React.FC = () => {
     }
   }, [hasShownWelcome]);
 
-  // Add effect to check for date change
-  useEffect(() => {
-    const checkDateChange = () => {
-      const today = new Date().toISOString().split('T')[0];
+  // Function to get formatted date string
+  const getFormattedDate = useCallback(() => {
+    const now = new Date();
+    return now.toLocaleDateString(undefined, { 
+      weekday: 'long',
+      month: 'long', 
+      day: 'numeric',
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+    });
+  }, []);
+
+  // Function to check if a date is today (unused but kept for future use)
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const _isToday = (date: string): boolean => {
+    return date === today;
+  };
+
+  // Helper to calculate the day number for today in a challenge (1-indexed)
+  const getTodayDayNumber = (challenge: Challenge): number => {
+    const startDate = new Date(challenge.startDate);
+    const now = new Date();
+    
+    // Set both dates to start of day for accurate comparison
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const challengeStart = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+    
+    // Calculate days since start (floor to handle time differences)
+    const daysSinceStart = Math.floor((todayStart.getTime() - challengeStart.getTime()) / (1000 * 60 * 60 * 24));
+    
+    // Today's day number (1-indexed)
+    return daysSinceStart + 1;
+  };
+
+  // Check if a challenge has been marked complete today
+  const hasMarkedTodayComplete = useCallback((challenge: Challenge): boolean => {
+    const todayDayNumber = getTodayDayNumber(challenge);
+    return challenge.notes[`${todayDayNumber}`] !== undefined;
+  }, []);
+
+  // Helper to get the current day for a challenge (capped at challenge duration)
+  const getCurrentDayForChallenge = (challenge: Challenge) => {
+    const dayNumber = getTodayDayNumber(challenge);
+    return Math.min(dayNumber, challenge.duration);
+  };
+
+  // Helper to calculate the current streak for a challenge
+  const getStreakForChallenge = (challenge: Challenge): number => {
+    if (!challenge.notes || Object.keys(challenge.notes).length === 0) {
+      return 0;
+    }
+
+    // Get all completed days (keys are day numbers stored as strings)
+    const completedDayNumbers = Object.keys(challenge.notes)
+      .map(day => parseInt(day, 10))
+      .sort((a, b) => b - a); // Sort in descending order (most recent first)
       
-      if (today !== lastKnownDate) {
-        // Date has changed, update the last known date
-        localStorage.setItem('lastKnownDate', today);
-        setLastKnownDate(today);
-        
-        // Update user data to reflect new day
-        const updatedUserData = {
-          ...userData,
-          challenges: userData.challenges.map(challenge => {
-            // Reset the hasMarkedTodayComplete state for each challenge
-            return {
-              ...challenge,
-              // Keep all other properties the same
-            };
+    if (completedDayNumbers.length === 0) {
+      return 0;
+    }
+    
+    // Get current day number since start
+    const todayDayNumber = getTodayDayNumber(challenge);
+    
+    // Get the most recent completed day
+    const mostRecentCompletedDay = completedDayNumbers[0];
+    
+    // If most recent completion isn't today or yesterday, streak is broken
+    if (todayDayNumber - mostRecentCompletedDay > 1) {
+      return 0;
+    }
+    
+    // Start with streak of 1 for the most recent day
+    let streak = 1;
+    // Initialize the expected previous day
+    let expectedPreviousDay = mostRecentCompletedDay - 1;
+    
+    // Loop through all completed days (already sorted in descending order)
+    for (let i = 1; i < completedDayNumbers.length; i++) {
+      const completedDay = completedDayNumbers[i];
+      
+      // If this day matches the expected previous day, increment streak
+      if (completedDay === expectedPreviousDay) {
+        streak++;
+        expectedPreviousDay--; // Decrement for next iteration
+      } else {
+        // Break the streak - we hit a gap
+        break;
+      }
+    }
+    
+    return streak;
+  };
+
+
+
+
+
+  // Function to check and show milestone achievements
+  const checkMilestoneAchievement = (challenge: Challenge) => {
+    const currentPercentage = Math.floor((challenge.completedDays / challenge.duration) * 100);
+    
+    // Check for day-specific milestones first
+    if (challenge.completedDays === 1) {
+      setShowMilestone({
+        challengeId: challenge.id,
+        milestone: {
+          ...milestones[0],
+          percentage: currentPercentage // Update with current progress
+        }
+      });
+      return;
+    }
+
+    // Check for comeback (streak = 1 but not first day)
+    const streak = getStreakForChallenge(challenge);
+    if (streak === 1 && challenge.completedDays > 1) {
+      // This is a comeback after breaking a streak
+      setShowMilestone({
+        challengeId: challenge.id,
+        milestone: {
+          ...milestones[1],
+          percentage: currentPercentage // Update with current progress
+        }
+      });
+      return;
+    }
+
+    if (challenge.completedDays === 7) {
+      setShowMilestone({
+        challengeId: challenge.id,
+        milestone: {
+          ...milestones[2], // Now at index 2 since we added comeback
+          percentage: currentPercentage // Update with current progress
+        }
+      });
+      return;
+    }
+
+    // Then check percentage-based milestones
+    const achievedMilestone = milestones
+      .slice(3) // Skip the day-based and comeback milestones
+      .reverse()
+      .find(m => currentPercentage >= m.percentage);
+
+    if (achievedMilestone) {
+      setShowMilestone({
+        challengeId: challenge.id,
+        milestone: {
+          ...achievedMilestone,
+          percentage: currentPercentage // Update with current progress
+        }
+      });
+    }
+  };
+
+  // Mark a challenge as complete for today
+    const handleMarkComplete = async (challengeId: string) => {
+      if (!currentUser) return;
+      const challenge = userData.challenges.find(c => c.id === challengeId);
+      if (!challenge) return;
+      const todayDayNumber = getTodayDayNumber(challenge);
+
+      // Prevent duplicate completion for today
+      if (hasMarkedTodayComplete(challenge)) {
+        alert("You've already marked today's challenge as complete. Come back tomorrow!");
+        return;
+      }
+
+      // ... (your upsert logic here)
+
+      // Upsert to Pinecone and get vectorId
+      const upsertResponse = await upsertToPinecone({
+        userId: currentUser.uid,
+        type: 'note',
+        content: note,
+        metadata: {
+          challengeId,
+          dayNumber: todayDayNumber,
+          challengeName: challenge.name,
+          completionDate: new Date().toISOString(),
+        }
+      });
+      const vectorId = upsertResponse.vectorId;
+
+      // Save note and vectorId in Firestore
+      const updatedChallenges = userData.challenges.map(challenge => {
+        if (challenge.id === challengeId) {
+          return {
+            ...challenge,
+            notes: migrateNotes({
+              ...challenge.notes,
+              [`${todayDayNumber}`]: { content: note, vectorId }
+            })
+          };
+        }
+        return {
+          ...challenge,
+          notes: migrateNotes(challenge.notes)
+        };
+      });
+
+      // Update Firestore
+      await updateChallenges(currentUser.uid, updatedChallenges);
+
+      // **Add this: update local state**
+      setUserData(prev => ({
+        ...prev,
+        challenges: updatedChallenges
+      }));
+
+      // Optionally, clear the note input
+      setNote('');
+      setChallengeIdForNote(null);
+    };
+
+  const handleDeleteChallenge = (challengeId: string) => {
+    setChallengeToDelete(challengeId);
+    setDeleteDialogOpen(true);
+  };
+
+  const confirmDeleteChallenge = async () => {
+    if (!currentUser || !challengeToDelete) return;
+    
+    const updatedChallenges = userData.challenges.filter(
+      challenge => challenge.id !== challengeToDelete
+    );
+
+    try {
+      // First update Firestore
+      await updateChallenges(currentUser.uid, updatedChallenges);
+
+      // Delete the challenge vector
+      await deleteFromPinecone({
+        userId: currentUser.uid,
+        type: 'challenge' as 'challenge',
+        challengeId: challengeToDelete
+      });
+
+      // Delete all notes vectors for this challenge
+      await deleteFromPinecone({
+        prefix: `${currentUser.uid}-note-${challengeToDelete}-`
+      });
+
+      setUserData(prev => ({
+        ...prev,
+        challenges: updatedChallenges
+      }));
+    } catch (error) {
+      console.error('[PINECONE][DELETE CHALLENGE] Error:', error);
+    }
+
+    setDeleteDialogOpen(false);
+    setChallengeToDelete(null);
+  };
+
+  
+  const handleOpenLogMenu = (event: React.MouseEvent<HTMLButtonElement>, challengeId: string) => {
+    event.stopPropagation(); // Prevent event bubbling
+    setMenuAnchorEl(event.currentTarget);
+    setSelectedChallengeId(challengeId);
+  };
+
+  const handleCloseLogMenu = () => {
+    setMenuAnchorEl(null);
+    setSelectedChallengeId(null);
+  };
+
+  // Open log edit dialog for a specific day
+  const handleEditLog = () => {
+    if (!selectedChallengeId) return;
+    
+    const challenge = userData.challenges.find(c => c.id === selectedChallengeId);
+    if (!challenge) return;
+    
+    // Find the most recently completed day
+    const completedDays = Object.keys(challenge.notes)
+      .map(day => parseInt(day, 10))
+      .sort((a, b) => b - a);
+    
+    if (completedDays.length === 0) {
+      alert("No completed days to edit");
+      return;
+    }
+    
+    const dayToEdit = completedDays[0];
+    
+    setEditChallengeId(selectedChallengeId);
+    setEditLogDay(dayToEdit);
+    setEditNote(challenge.notes[`${dayToEdit}`]?.content || '');
+    setEditLogDialog(true);
+    handleCloseLogMenu();
+  };
+
+  // Delete a log entry for a specific day
+  const handleDeleteLog = () => {
+    if (!selectedChallengeId) return;
+    const challenge = userData.challenges.find(c => c.id === selectedChallengeId);
+    if (!challenge) {
+      console.error('Challenge not found:', selectedChallengeId);
+      return;
+    }
+    
+    // Find the most recently completed day
+    const completedDays = Object.keys(challenge.notes)
+      .map(day => parseInt(day, 10))
+      .sort((a, b) => b - a);
+    
+    if (completedDays.length === 0) {
+      alert("No completed days to delete");
+      return;
+    }
+    
+    const dayToDelete = completedDays[0];
+    
+    setLogToDelete({ challengeId: selectedChallengeId, day: dayToDelete });
+    setDeleteLogDialogOpen(true);
+    handleCloseLogMenu();
+  };
+
+  // Confirm deletion of a log entry
+  const confirmDeleteLog = async () => {
+    if (!logToDelete || !currentUser?.uid) {
+      console.error('[PINECONE][DELETE LOG] Missing required data:', { 
+        logToDelete, 
+        uid: currentUser?.uid 
+      });
+      setDeleteLogDialogOpen(false);
+      setLogToDelete(null);
+      return;
+    }
+    
+    try {
+      console.log('[PINECONE][DELETE LOG] Starting log deletion process:', {
+        logToDelete,
+        userId: currentUser.uid,
+        timestamp: new Date().toISOString()
+      });
+
+      // Find the challenge to update
+      const challengeToUpdate = userData.challenges.find(c => c.id === logToDelete.challengeId);
+      
+      if (!challengeToUpdate) {
+        console.error('[PINECONE][DELETE LOG] Challenge not found for deletion:', {
+          challengeId: logToDelete.challengeId,
+          availableChallenges: userData.challenges.map(c => c.id)
+        });
+        setDeleteLogDialogOpen(false);
+        setLogToDelete(null);
+        return;
+      }
+
+      const dayKey = `${logToDelete.day}`;
+      const updatedChallenges = userData.challenges.map(challenge => {
+        if (challenge.id === logToDelete.challengeId) {
+          const newNotes = { ...challenge.notes };
+          delete newNotes[dayKey];
+          const newCompletedDays = Object.keys(newNotes).length;
+          return {
+            ...challenge,
+            notes: newNotes,
+            completedDays: newCompletedDays
+          };
+        }
+        return challenge;
+      });
+
+      const pineconeParams = {
+        userId: currentUser.uid,
+        type: "note" as "note",
+        challengeId: logToDelete.challengeId,
+        dayNumber: logToDelete.day
+      };
+      console.log('[PINECONE][DELETE LOG] Pinecone params:', pineconeParams);
+
+      const [firestoreResult, pineconeResult] = await Promise.all([
+        updateChallenges(currentUser.uid, updatedChallenges),
+        deleteFromPinecone(pineconeParams)
+      ]);
+      console.log('[PINECONE][DELETE LOG] Firestore result:', firestoreResult);
+      console.log('[PINECONE][DELETE LOG] Pinecone result:', pineconeResult);
+
+      setUserData(prev => ({ ...prev, challenges: updatedChallenges }));
+    } catch (error) {
+      console.error('[PINECONE][DELETE LOG] Error:', error);
+    }
+    
+    setDeleteLogDialogOpen(false);
+    setLogToDelete(null);
+  };
+
+  // Save an edited log entry
+  const handleSaveEditedLog = async () => {
+    if (!currentUser || !editChallengeId || editLogDay === null) return;
+
+    // 1. Find the old vectorId (if you store it in Firestore, use that)
+    // If not, construct a prefix to match all possible vectors for this note
+    const vectorPrefix = `${currentUser.uid}-note-${editChallengeId}-${editLogDay}`;
+
+    // 2. Delete the old vector(s)
+    await deleteFromPinecone({ prefix: vectorPrefix });
+
+    // 3. Upsert the new/edited note
+    const challenge = userData.challenges.find(c => c.id === editChallengeId);
+    if (challenge) {
+      const oldNoteObj = challenge?.notes[editLogDay];
+      if (oldNoteObj?.vectorId) {
+        await deleteFromPinecone({ vectorId: oldNoteObj.vectorId });
+      }
+      const upsertResponse = await upsertToPinecone({
+        userId: currentUser.uid,
+        type: 'note',
+        content: editNote,
+        metadata: {
+          challengeId: editChallengeId,
+          challengeName: challenge.name,
+          dayNumber: editLogDay,
+          updateDate: new Date().toISOString(),
+        }
+      });
+      const newVectorId = upsertResponse.vectorId;
+      const updatedChallenges = userData.challenges.map(challenge => {
+        if (challenge.id === editChallengeId) {
+          return {
+            ...challenge,
+            notes: migrateNotes({
+              ...challenge.notes,
+              [`${editLogDay}`]: { content: editNote, vectorId: newVectorId }
+            })
+          };
+        }
+        return {
+          ...challenge,
+          notes: migrateNotes(challenge.notes)
+        };
+      });
+      await updateChallenges(currentUser.uid, updatedChallenges);
+    }
+
+    // 4. Update Firestore and local state as you already do
+    // ... your Firestore update logic ...
+    setEditLogDialog(false);
+    setEditChallengeId(null);
+    setEditLogDay(null);
+    setEditNote('');
+  };
+
+  const handleResetAll = async () => {
+    if (!currentUser) return;
+
+    try {
+      await updateChallenges(currentUser.uid, []);
+      setUserData(prev => ({
+        ...prev,
+        challenges: []
+      }));
+      setIsFirstVisit(true);
+      setResetDialogOpen(false);
+      navigate('/dashboard');
+    } catch (error) {
+      console.error('Error resetting user data:', error);
+    }
+  };
+
+  const handleDailyNoteSubmit = async () => {
+    if (!currentUser) return;
+    const todayKey = getLocalDateKey();
+    const updatedDailyNotes = {
+      ...userData.dailyNotes,
+      [todayKey]: dailyNote
+    };
+    try {
+      await updateDailyNotes(currentUser.uid, updatedDailyNotes);
+      setUserData(prev => ({
+        ...prev,
+        dailyNotes: updatedDailyNotes
+      }));
+
+      await upsertDailyReflection(currentUser.uid, todayKey, dailyNote);
+
+    } catch (error) {
+      console.error('Error updating daily note:', error);
+    }
+    setDailyNoteDialog(false);
+  };
+
+  const handleUpdateDuration = async () => {
+    if (!currentUser || !selectedChallengeId || !newDuration) return;
+    
+    const updatedDuration = parseInt(newDuration);
+
+    if (updatedDuration < 10) {
+      alert("Challenge duration must be at least 10 days");
+      return;
+    }
+
+    if (updatedDuration > 365) {
+      alert("Challenge duration cannot be more than 365 days");
+      return;
+    }
+
+    const selectedChallenge = userData.challenges.find(c => c.id === selectedChallengeId);
+    if (!selectedChallenge) return;
+
+    if (updatedDuration < selectedChallenge.completedDays) {
+      alert("New duration cannot be less than completed days");
+      return;
+    }
+
+    const updatedChallenges = userData.challenges.map(challenge => {
+      if (challenge.id === selectedChallengeId) {
+        return {
+          ...challenge,
+          duration: updatedDuration
+        };
+      }
+      return challenge;
+    });
+
+    try {
+      await updateChallenges(currentUser.uid, updatedChallenges);
+      setUserData(prev => ({
+        ...prev,
+        challenges: updatedChallenges
+      }));
+
+      // Use local updatedChallenges for Pinecone upsert
+      const updatedChallenge = updatedChallenges.find(c => c.id === selectedChallengeId);
+      if (updatedChallenge) {
+        await upsertChallengeData(currentUser.uid, updatedChallenge);
+        console.log('[PINECONE][UPSERT CHALLENGE] Updated duration in Pinecone:', updatedChallenge);
+      }
+    } catch (error) {
+      console.error('Error updating challenge duration:', error);
+    }
+
+    setUpdateDurationDialog(false);
+    setNewDuration('');
+  };
+
+  // Calculate challenge streaks and percentages
+  const getProgressPercentage = (challenge: Challenge): number => {
+    return Math.floor((challenge.completedDays / challenge.duration) * 100);
+  };
+
+  const handleTabChange = (_: React.SyntheticEvent, newValue: number) => {
+    setCurrentTab(newValue);
+  };
+
+  const handleDeleteDailyNote = async () => {
+    if (!currentUser) return;
+    const todayKey = getLocalDateKey();
+    const updatedDailyNotes = { ...userData.dailyNotes };
+    delete updatedDailyNotes[todayKey];
+    
+    try {
+      // Update Firestore and delete from Pinecone in parallel
+      await Promise.all([
+        updateDailyNotes(currentUser.uid, updatedDailyNotes),
+        deleteFromPinecone({
+          userId: currentUser.uid,
+          type: 'reflection',
+          vectorId: `reflection_${todayKey}`
+        })
+      ]);
+
+      // Update local state
+      setUserData(prev => ({
+        ...prev,
+        dailyNotes: updatedDailyNotes
+      }));
+      setDeleteNoteDialogOpen(false);
+    } catch (error) {
+      console.error('Error deleting daily note:', error);
+    }
+  };
+
+  // Handler for opening note dialog (unused but kept for future use)
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const _handleOpenNoteDialog = (challenge: Challenge) => {
+    setSelectedChallengeForNote(challenge);
+    setNoteDialogOpen(true);
+  };
+
+  const handleCloseNoteDialog = () => {
+    setNoteDialogOpen(false);
+    setSelectedChallengeForNote(null);
+  };
+
+  const handleSaveNoteAndComplete = async () => {
+    if (!selectedChallengeForNote) return;
+    if (!currentUser) return;
+    const challenge = userData.challenges.find(c => c.id === selectedChallengeForNote.id);
+    if (!challenge) return;
+    const nextDay = challenge.completedDays + 1;
+
+    // Upsert to Pinecone and get vectorId
+    const upsertResponse = await upsertToPinecone({
+      userId: currentUser.uid,
+      type: 'note',
+      content: note,
+      metadata: {
+        challengeId: selectedChallengeForNote.id,
+        dayNumber: nextDay,
+        challengeName: selectedChallengeForNote.name,
+        completionDate: new Date().toISOString(),
+      }
+    });
+    const vectorId = upsertResponse.vectorId;
+
+    const updatedChallenges = userData.challenges.map(c => {
+      if (c.id === selectedChallengeForNote.id) {
+        return {
+          ...c,
+          completedDays: nextDay,
+          notes: migrateNotes({
+            ...c.notes,
+            [nextDay]: { content: note, vectorId }
           })
         };
+      }
+      return {
+        ...c,
+        notes: migrateNotes(c.notes)
+      };
+    });
+
+    try {
+      await updateChallenges(currentUser.uid, updatedChallenges);
+      const latestUserData = await getUserData(currentUser.uid);
+      if (latestUserData) setUserData(latestUserData);
+      setNoteDialogOpen(false);
+      setNote('');
+      setChallengeIdForNote(null);
+
+      if (selectedChallengeForNote) {
+        await upsertNoteData(currentUser.uid, selectedChallengeForNote.id, nextDay, note);
+      }
+
+    } catch (error) {
+      console.error('Error saving note and completing challenge:', error);
+    }
+  };
+
+  // Edit today's note through pencil icon
+  const handleOpenEditTodayNoteDialog = (challenge: Challenge) => {
+    // Only proceed if we have completed the challenge for today
+    if (!hasMarkedTodayComplete(challenge)) {
+      alert("You haven't marked today's challenge as complete yet");
+      return;
+    }
+    
+    setEditTodayChallengeId(challenge.id);
+    
+    // Get today's day number for this challenge
+    const todayDayNumber = getTodayDayNumber(challenge);
+    
+    // Get the existing note for today
+    const existingNote = challenge.notes[`${todayDayNumber}`]?.content || '';
+    setEditTodayNote(existingNote);
+    
+    setEditTodayNoteDialogOpen(true);
+  };
+
+  // Save the edited note for today
+  const handleSaveEditTodayNote = async () => {
+    if (!currentUser || !editTodayChallengeId) return;
+    
+    const challenge = userData.challenges.find(c => c.id === editTodayChallengeId);
+    if (!challenge) return;
+    
+    const todayDayNumber = getTodayDayNumber(challenge);
+    
+    const updatedChallenges = userData.challenges.map(c => {
+      if (c.id === editTodayChallengeId) {
+        return {
+          ...c,
+          notes: migrateNotes({
+            ...c.notes,
+            [`${todayDayNumber}`]: { content: editTodayNote, vectorId: '' } // If you have the new vectorId, use it here
+          })
+        };
+      }
+      return {
+        ...c,
+        notes: migrateNotes(c.notes)
+      };
+    });
+    
+    try {
+      // Update Firestore
+      await updateChallenges(currentUser.uid, updatedChallenges);
+      
+      // Update Pinecone
+      await updatePineconeNote({
+        userId: currentUser.uid,
+        type: 'note',
+        id: `${editTodayChallengeId}_day${todayDayNumber}`,
+        content: editTodayNote,
+        metadata: {
+          challengeId: editTodayChallengeId,
+          challengeName: challenge.name,
+          dayNumber: todayDayNumber,
+          updateDate: new Date().toISOString(),
+        }
+      });
+
+      // Update local state
+      const latestUserData = await getUserData(currentUser.uid);
+      if (latestUserData) setUserData(latestUserData);
+      
+      setEditTodayNoteDialogOpen(false);
+      setEditTodayChallengeId(null);
+      setEditTodayNote('');
+    } catch (error) {
+      console.error('Error saving today\'s note:', error);
+    }
+  };
+
+  useEffect(() => {
+    const handleScroll = () => {
+      setScrolled(window.scrollY > 10);
+    };
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  const handleDeleteAllDailyNotes = async () => {
+    if (!currentUser) return;
+    try {
+      await updateDailyNotes(currentUser.uid, {});
+      setUserData(prev => ({ ...prev, dailyNotes: {} }));
+      setDeleteAllNotesDialogOpen(false);
+    } catch (error) {
+      console.error('Error deleting all daily notes:', error);
+    }
+  };
+
+  // Effect to check for date change
+  useEffect(() => {
+    const checkDateChange = () => {
+      const now = new Date();
+      const currentDate = getLocalDateKey(now);
+      
+      if (currentDate !== lastKnownDate) {
+        console.log('Date changed:', { lastKnownDate, currentDate });
+        localStorage.setItem('lastKnownDate', currentDate);
+        setLastKnownDate(currentDate);
         
-        setUserData(updatedUserData);
-        localStorage.setItem('userData', JSON.stringify(updatedUserData));
+        setUserData(prevData => ({
+          ...prevData,
+          challenges: prevData.challenges.map(challenge => ({
+            ...challenge,
+          }))
+        }));
       }
     };
 
-    // Check for date change every minute
     const interval = setInterval(checkDateChange, 60000);
-    
-    // Initial check
     checkDateChange();
-    
     return () => clearInterval(interval);
-  }, [lastKnownDate, userData]);
+  }, [lastKnownDate]);
 
   const handleAddChallenge = async () => {
     if (!currentUser) return;
+
+    // Enforce unique challenge names (case-insensitive)
+    const nameExists = userData.challenges.some(
+      c => c.name.trim().toLowerCase() === newChallenge.name.trim().toLowerCase()
+    );
+    if (nameExists) {
+      alert('A challenge with this name already exists. Please choose a unique name.');
+      return;
+    }
+
+    if (parseInt(newChallenge.duration) > 365) {
+      alert("Challenge duration cannot be more than 365 days");
+      return;
+    }
 
     const challenge: Challenge = {
       id: Date.now().toString(),
@@ -315,6 +1430,10 @@ const DashboardPage: React.FC = () => {
         ...prev,
         challenges: updatedChallenges
       }));
+
+      // After challenge is created successfully
+      await upsertChallengeData(currentUser.uid, challenge);
+
     } catch (error) {
       console.error('Error adding challenge:', error);
     }
@@ -327,455 +1446,6 @@ const DashboardPage: React.FC = () => {
     setChallengeIdForNote(challengeId);
     setNote(e.target.value);
   };
-
-  // Check if a challenge has been marked complete today
-  const hasMarkedTodayComplete = (challenge: Challenge): boolean => {
-    const startDate = new Date(challenge.startDate);
-    const today = new Date();
-    
-    // Calculate days since start (floor to handle time differences)
-    const daysSinceStart = Math.floor((today.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
-    
-    // Get the last completed day from the notes
-    const lastCompletedDay = Math.max(...Object.keys(challenge.notes).map(Number), 0);
-    
-    // Check if the last completed day matches today's day number
-    return lastCompletedDay === daysSinceStart + 1;
-  };
-
-  // Function to check and show milestone achievements
-  const checkMilestoneAchievement = (challenge: Challenge) => {
-    const currentPercentage = Math.floor((challenge.completedDays / challenge.duration) * 100);
-    
-    // Check for day-specific milestones first
-    if (challenge.completedDays === 1) {
-      setShowMilestone({
-        challengeId: challenge.id,
-        milestone: {
-          ...milestones[0],
-          percentage: currentPercentage // Update with current progress
-        }
-      });
-      return;
-    }
-
-    if (challenge.completedDays === 7) {
-      setShowMilestone({
-        challengeId: challenge.id,
-        milestone: {
-          ...milestones[1],
-          percentage: currentPercentage // Update with current progress
-        }
-      });
-      return;
-    }
-
-    // Then check percentage-based milestones
-    const achievedMilestone = milestones
-      .slice(2) // Skip the day-based milestones
-      .reverse()
-      .find(m => currentPercentage >= m.percentage);
-
-    if (achievedMilestone) {
-      setShowMilestone({
-        challengeId: challenge.id,
-        milestone: {
-          ...achievedMilestone,
-          percentage: currentPercentage // Update with current progress
-        }
-      });
-    }
-  };
-
-  const handleMarkComplete = async (challengeId: string) => {
-    if (!currentUser) return;
-
-    const challenge = userData.challenges.find(c => c.id === challengeId);
-    if (!challenge) return;
-
-    if (hasMarkedTodayComplete(challenge)) {
-      alert("You've already marked today's challenge as complete. Come back tomorrow!");
-      return;
-    }
-
-    const updatedChallenges = userData.challenges.map(challenge => {
-      if (challenge.id === challengeId) {
-        const currentDay = challenge.completedDays + 1;
-        const updatedChallenge = {
-          ...challenge,
-          completedDays: currentDay,
-          notes: {
-            ...challenge.notes,
-            [currentDay]: note
-          }
-        };
-        
-        checkMilestoneAchievement(updatedChallenge);
-        return updatedChallenge;
-      }
-      return challenge;
-    });
-
-    try {
-      await updateChallenges(currentUser.uid, updatedChallenges);
-      setUserData(prev => ({
-        ...prev,
-        challenges: updatedChallenges
-      }));
-    } catch (error) {
-      console.error('Error updating challenge completion:', error);
-    }
-
-    setNote('');
-    setChallengeIdForNote(null);
-  };
-
-  const handleDeleteChallenge = (challengeId: string) => {
-    setChallengeToDelete(challengeId);
-    setDeleteDialogOpen(true);
-  };
-
-  const confirmDeleteChallenge = async () => {
-    if (!currentUser || !challengeToDelete) return;
-    
-    const updatedChallenges = userData.challenges.filter(
-      challenge => challenge.id !== challengeToDelete
-    );
-
-    try {
-      await updateChallenges(currentUser.uid, updatedChallenges);
-      setUserData(prev => ({
-        ...prev,
-        challenges: updatedChallenges
-      }));
-    } catch (error) {
-      console.error('Error deleting challenge:', error);
-    }
-
-    setDeleteDialogOpen(false);
-    setChallengeToDelete(null);
-  };
-
-  const handleOpenLogMenu = (event: React.MouseEvent<HTMLButtonElement>, challengeId: string) => {
-    event.stopPropagation(); // Prevent event bubbling
-    setMenuAnchorEl(event.currentTarget);
-    setSelectedChallengeId(challengeId);
-  };
-
-  const handleCloseLogMenu = () => {
-    setMenuAnchorEl(null);
-    setSelectedChallengeId(null);
-  };
-
-  const handleEditLog = () => {
-    if (!selectedChallengeId) return;
-    
-    const challenge = userData.challenges.find(c => c.id === selectedChallengeId);
-    if (!challenge) return;
-    
-    // For new challenges or no notes, start with empty note
-    setEditChallengeId(selectedChallengeId);
-    setEditLogDay(challenge.completedDays || 1);
-    setEditNote(challenge.notes[challenge.completedDays] || '');
-    setEditLogDialog(true);
-    handleCloseLogMenu();
-  };
-
-  const handleDeleteLog = () => {
-    if (!selectedChallengeId) return;
-    
-    const updatedChallenges = userData.challenges.map(challenge => {
-      if (challenge.id === selectedChallengeId) {
-        const currentDay = challenge.completedDays || 1;
-        // Create a copy of notes without the current day
-        const { [currentDay]: deletedNote, ...remainingNotes } = challenge.notes;
-        
-        const updatedChallenge = {
-          ...challenge,
-          completedDays: Math.max(0, currentDay - 1),
-          notes: remainingNotes
-        };
-
-        // Check for milestone immediately without delay
-        checkMilestoneAchievement(updatedChallenge);
-        
-        return updatedChallenge;
-      }
-      return challenge;
-    });
-
-    const updatedUserData = {
-      ...userData,
-      challenges: updatedChallenges
-    };
-
-    setUserData(updatedUserData);
-    localStorage.setItem('userData', JSON.stringify(updatedUserData));
-    handleCloseLogMenu();
-  };
-
-  const handleSaveEditedLog = async () => {
-    if (!currentUser || !editChallengeId || editLogDay === null) return;
-    
-    const updatedChallenges = userData.challenges.map(challenge => {
-      if (challenge.id === editChallengeId) {
-        return {
-          ...challenge,
-          notes: {
-            ...challenge.notes,
-            [editLogDay]: editNote
-          }
-        };
-      }
-      return challenge;
-    });
-
-    try {
-      await updateChallenges(currentUser.uid, updatedChallenges);
-      setUserData(prev => ({
-        ...prev,
-        challenges: updatedChallenges
-      }));
-    } catch (error) {
-      console.error('Error updating challenge note:', error);
-    }
-
-    setEditLogDialog(false);
-  };
-
-  const handleResetAll = async () => {
-    if (!currentUser) return;
-
-    try {
-      await resetUserData(currentUser.uid, userData.name);
-      setUserData({
-        name: userData.name,
-        challenges: [],
-        dailyNotes: {}
-      });
-      setIsFirstVisit(true);
-      setResetDialogOpen(false);
-      navigate('/dashboard');
-    } catch (error) {
-      console.error('Error resetting user data:', error);
-    }
-  };
-
-  const handleDailyNoteSubmit = async () => {
-    if (!currentUser) return;
-
-    const updatedDailyNotes = {
-      ...userData.dailyNotes,
-      [today]: dailyNote
-    };
-
-    try {
-      await updateDailyNotes(currentUser.uid, updatedDailyNotes);
-      setUserData(prev => ({
-        ...prev,
-        dailyNotes: updatedDailyNotes
-      }));
-    } catch (error) {
-      console.error('Error updating daily note:', error);
-    }
-
-    setDailyNoteDialog(false);
-  };
-
-  const handleUpdateDuration = async () => {
-    if (!currentUser || !selectedChallengeId || !newDuration) return;
-    
-    const updatedDuration = parseInt(newDuration);
-    
-    if (updatedDuration < 10) {
-      alert("Challenge duration must be at least 10 days");
-      return;
-    }
-
-    const selectedChallenge = userData.challenges.find(c => c.id === selectedChallengeId);
-    
-    if (!selectedChallenge) return;
-    
-    if (updatedDuration < selectedChallenge.completedDays) {
-      alert("New duration cannot be less than completed days");
-      return;
-    }
-    
-    const updatedChallenges = userData.challenges.map(challenge => {
-      if (challenge.id === selectedChallengeId) {
-        return {
-          ...challenge,
-          duration: updatedDuration
-        };
-      }
-      return challenge;
-    });
-
-    try {
-      await updateChallenges(currentUser.uid, updatedChallenges);
-      setUserData(prev => ({
-        ...prev,
-        challenges: updatedChallenges
-      }));
-    } catch (error) {
-      console.error('Error updating challenge duration:', error);
-    }
-
-    setUpdateDurationDialog(false);
-    setNewDuration('');
-  };
-
-  // Calculate challenge streaks and percentages
-  const getProgressPercentage = (challenge: Challenge): number => {
-    return Math.floor((challenge.completedDays / challenge.duration) * 100);
-  };
-
-  const handleTabChange = (_: React.SyntheticEvent, newValue: number) => {
-    setCurrentTab(newValue);
-  };
-
-  // Function to get appropriate icon based on challenge name
-  const getChallengeIcon = (challengeName: string) => {
-    const name = challengeName.toLowerCase();
-    
-    // Spiritual/Mindfulness
-    if (name.includes('pray') || name.includes('spiritual') || name.includes('worship') || name.includes('reflection')) {
-      return <PrayIcon fontSize="small" />;
-    }
-    
-    // Personal habits / addictions
-    if (name.includes('nofap') || name.includes('semen retention') || name.includes('masturbation') || name.includes('porn') || name.includes('addiction')) {
-      return <VisibilityOffIcon fontSize="small" />;
-    }
-    if (name.includes('abstain') || name.includes('abstinence') || name.includes('dopamine') || name.includes('quit addiction')) {
-      return <VapeFreeBrushIcon fontSize="small" />;
-    }
-    if (name.includes('self control') || name.includes('discipline') || name.includes('purity') || name.includes('temptation')) {
-      return <SelfDisciplineIcon fontSize="small" />;
-    }
-    
-    // Digital/Technology related
-    if (name.includes('phone') || name.includes('mobile') || name.includes('screen') || name.includes('device')) {
-      return <SmartphoneIcon fontSize="small" />;
-    }
-    if (name.includes('digital detox') || name.includes('no phone') || name.includes('screen time') || name.includes('less tech')) {
-      return <MobileOffIcon fontSize="small" />;
-    }
-    
-    // Hygiene related
-    if (name.includes('shower') || name.includes('bath')) {
-      return <ShowerIcon fontSize="small" />;
-    }
-    if (name.includes('brush') || name.includes('teeth') || name.includes('dental') || name.includes('floss')) {
-      return <ToothbrushIcon fontSize="small" />;
-    }
-    if (name.includes('wash') || name.includes('clean') || name.includes('hygiene')) {
-      return <CleanHandsIcon fontSize="small" />;
-    }
-    
-    // Exercise/Fitness related
-    if (name.includes('run') || name.includes('jog') || name.includes('marathon') || name.includes('walk')) {
-      return <DirectionsRunIcon fontSize="small" />;
-    }
-    if (name.includes('workout') || name.includes('gym') || name.includes('exercise') || name.includes('training') || name.includes('strength')) {
-      return <FitnessCenterIcon fontSize="small" />;
-    }
-    
-    // Mindfulness/Mental health
-    if (name.includes('meditat') || name.includes('yoga') || name.includes('breath')) {
-      return <SelfImprovementIcon fontSize="small" />;
-    }
-    if (name.includes('mental') || name.includes('mind') || name.includes('brain') || name.includes('think')) {
-      return <PsychologyIcon fontSize="small" />;
-    }
-    if (name.includes('calm') || name.includes('stress') || name.includes('relax')) {
-      return <SpaIcon fontSize="small" />;
-    }
-    
-    // Learning/Growth
-    if (name.includes('read') || name.includes('book')) {
-      return <MenuBookIcon fontSize="small" />;
-    }
-    if (name.includes('learn') || name.includes('study') || name.includes('education') || name.includes('course')) {
-      return <SchoolIcon fontSize="small" />;
-    }
-    
-    // Coding/Programming specific languages
-    if (name.includes('code') || name.includes('program') || name.includes('develop') || 
-        name.includes('python') || name.includes('javascript') || name.includes('java') || 
-        name.includes('c++') || name.includes('typescript') || name.includes('coding') || 
-        name.includes('html') || name.includes('css') || name.includes('react') || 
-        name.includes('node') || name.includes('programming')) {
-      return <CodeIcon fontSize="small" />;
-    }
-    
-    // Health/Habits
-    if (name.includes('water') || name.includes('hydrate')) {
-      return <WaterDropIcon fontSize="small" />;
-    }
-    if (name.includes('sleep') || name.includes('bed') || name.includes('rest')) {
-      return <NightlightIcon fontSize="small" />;
-    }
-    if (name.includes('eat') || name.includes('diet') || name.includes('nutrition') || name.includes('food')) {
-      return <RestaurantIcon fontSize="small" />;
-    }
-    if (name.includes('health') || name.includes('habit')) {
-      return <FavoriteIcon fontSize="small" />;
-    }
-    if (name.includes('avoid') || name.includes('quit') || name.includes('no ') || name.includes('stop')) {
-      return <BlockIcon fontSize="small" />;
-    }
-    
-    // Creative
-    if (name.includes('art') || name.includes('draw') || name.includes('paint')) {
-      return <PaletteIcon fontSize="small" />;
-    }
-    if (name.includes('writ') || name.includes('journal')) {
-      return <BrushIcon fontSize="small" />;
-    }
-    if (name.includes('music') || name.includes('sing') || name.includes('play') || name.includes('song')) {
-      return <MusicNoteIcon fontSize="small" />;
-    }
-    
-    // Personal growth/Resilience
-    if (name.includes('volunteer') || name.includes('help') || name.includes('kind') || name.includes('giv')) {
-      return <VolunteerActivismIcon fontSize="small" />;
-    }
-    if (name.includes('gratitude') || name.includes('thank') || name.includes('appreciate')) {
-      return <FavoriteIcon fontSize="small" />;
-    }
-    if (name.includes('challenge') || name.includes('goal') || name.includes('achieve')) {
-      return <StarIcon fontSize="small" />;
-    }
-    if (name.includes('fire') || name.includes('streak') || name.includes('consisten')) {
-      return <LocalFireDepartmentIcon fontSize="small" />;
-    }
-    
-    // Default icon if no match
-    return <FitnessCenterIcon fontSize="small" />;
-  };
-
-  const handleSignOut = () => {
-    setSignOutDialogOpen(true);
-  };
-
-  const confirmSignOut = async () => {
-    try {
-      await logout();
-      navigate('/');
-    } catch (error) {
-      console.error('Error signing out:', error);
-    }
-  };
-
-  // Define menu actions
-  const menuActions = [
-    { icon: <AddIcon />, name: 'Add Challenge', onClick: () => setOpenDialog(true) },
-    { icon: <HistoryIcon />, name: 'Notes History', onClick: () => navigate('/notes-history') },
-    { icon: <AccountCircleIcon />, name: 'Profile', onClick: () => navigate('/profile') },
-    { icon: <RefreshIcon />, name: 'Reset All', onClick: () => setResetDialogOpen(true), color: 'error' },
-    { icon: <LogoutIcon />, name: 'Sign Out', onClick: handleSignOut }
-  ];
 
   if (loading) {
     return (
@@ -838,6 +1508,9 @@ const DashboardPage: React.FC = () => {
           zIndex: 10,
           bgcolor: 'background.default',
           borderBottom: '1px solid rgba(0,0,0,0.1)',
+          transition: 'backdrop-filter 0.3s, background 0.3s',
+          backdropFilter: scrolled ? 'blur(3px)' : 'none',
+          background: scrolled ? 'rgba(255,255,255,0.85)' : 'background.default',
         }}
       >
         <Container maxWidth="lg">
@@ -921,7 +1594,14 @@ const DashboardPage: React.FC = () => {
                 }}
               />
               <Tab 
-                label="Analytics" 
+                label="Info" 
+                sx={{ 
+                  textTransform: 'none',
+                  fontSize: '1rem'
+                }}
+              />
+              <Tab 
+                label="Notes History" 
                 sx={{ 
                   textTransform: 'none',
                   fontSize: '1rem'
@@ -942,8 +1622,7 @@ const DashboardPage: React.FC = () => {
         }}
       >
         {/* Tab Panels */}
-        {currentTab === 0 ? (
-          // Challenges View
+        {currentTab === 0 && (
           <Grid container spacing={3}>
             {/* Daily Note Card - Moved to top */}
             <Grid item xs={12}>
@@ -956,7 +1635,14 @@ const DashboardPage: React.FC = () => {
                   background: 'linear-gradient(135deg, rgba(46, 196, 182, 0.03) 0%, rgba(249, 132, 74, 0.03) 100%)',
                   border: '1px solid rgba(46, 196, 182, 0.1)',
                   position: 'relative',
-                  overflow: 'hidden'
+                  overflow: 'hidden',
+                  transition: 'box-shadow 0.2s, transform 0.2s',
+                  boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
+                  '&:hover': {
+                    boxShadow: '0 8px 32px 0 rgba(46,196,182,0.16)',
+                    transform: 'translateY(-2px) scale(1.02)',
+                    background: 'linear-gradient(135deg, #e0fcff 0%, #f8fafc 100%)',
+                  }
                 }}
               >
                 <Box sx={{ position: 'absolute', top: 0, right: 0, width: '100px', height: '100px', opacity: 0.03 }}>
@@ -964,26 +1650,29 @@ const DashboardPage: React.FC = () => {
                     <path d="M0,0 L100,0 L100,100 Z" fill="#2ec4b6" />
                   </svg>
                 </Box>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                  <Typography 
-                    variant="h6" 
+                <Box 
                     sx={{ 
-                      fontWeight: 600,
                       display: 'flex',
-                      alignItems: 'center',
-                      gap: 1
+                    flexDirection: 'column',
+                    mb: 2, 
+                    gap: { xs: 0.5, sm: 0 }
                     }}
                   >
-                    <EditNoteIcon sx={{ color: '#2ec4b6' }} />
-                    Today's Reflection
-                  </Typography>
-                  <Box>
+                  <Box sx={{ display: 'flex', alignItems: 'center', width: '100%' }}>
+                    <EditNoteIcon sx={{ color: '#2ec4b6', fontSize: { xs: 22, sm: 28 }, mr: 1 }} />
+                    <Typography variant="h6" sx={{ fontWeight: 600, fontSize: { xs: '1.1rem', sm: '1.25rem' }, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    Today&apos;s Reflection
+                    </Typography>
+                    {userData.dailyNotes && userData.dailyNotes[today] && (
+                      <Box sx={{ display: 'flex', gap: 1, ml: 1 }}>
                     <Tooltip title="Edit Reflection">
                       <IconButton 
                         size="small" 
                         color="primary"
-                        onClick={() => setDailyNoteDialog(true)}
-                        sx={{ mr: 1 }}
+                            onClick={() => {
+                              setDailyNote(userData.dailyNotes[today] || '');
+                              setDailyNoteDialog(true);
+                            }}
                       >
                         <EditNoteIcon fontSize="small" />
                       </IconButton>
@@ -992,23 +1681,28 @@ const DashboardPage: React.FC = () => {
                       <IconButton 
                         size="small" 
                         color="error"
-                        onClick={() => {
-                          const updatedUserData = {
-                            ...userData,
-                            dailyNotes: {
-                              ...userData.dailyNotes,
-                              [today]: ''
-                            }
-                          };
-                          setUserData(updatedUserData);
-                          localStorage.setItem('userData', JSON.stringify(updatedUserData));
-                          setDailyNote('');
-                        }}
+                        onClick={() => setDeleteNoteDialogOpen(true)}
                       >
                         <DeleteIcon fontSize="small" />
                       </IconButton>
                     </Tooltip>
                   </Box>
+                    )}
+                  </Box>
+                  <Typography 
+                    component="span" 
+                    variant="caption" 
+                    sx={{ 
+                      color: 'text.secondary',
+                      fontWeight: 400,
+                      fontSize: { xs: '0.98rem', sm: '1rem' },
+                      mt: 0.5,
+                      ml: { xs: 4, sm: 0 },
+                      display: 'block'
+                    }}
+                  >
+                    {getFormattedDate()}
+                  </Typography>
                 </Box>
                 {userData.dailyNotes && userData.dailyNotes[today] ? (
                   <Typography 
@@ -1027,7 +1721,10 @@ const DashboardPage: React.FC = () => {
                   <Button
                     variant="outlined"
                     startIcon={<EditNoteIcon />}
-                    onClick={() => setDailyNoteDialog(true)}
+                    onClick={() => {
+                      setDailyNote(userData.dailyNotes[today] || '');
+                      setDailyNoteDialog(true);
+                    }}
                     sx={{ 
                       width: '100%',
                       py: 2,
@@ -1049,7 +1746,20 @@ const DashboardPage: React.FC = () => {
                 key={challenge.id}
               >
                 <Grid item xs={12} sm={6} md={4} className="animate-in">
-                  <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+                  <Card sx={{ 
+                    height: '100%', 
+                    display: 'flex', 
+                    flexDirection: 'column',
+                    background: 'linear-gradient(135deg, #f8fafc 0%, #e3f6f5 100%)',
+                    boxShadow: '0 4px 24px 0 rgba(46,196,182,0.08)',
+                    transition: 'box-shadow 0.2s, transform 0.2s',
+                    borderRadius: 4,
+                    '&:hover': {
+                      boxShadow: '0 8px 32px 0 rgba(46,196,182,0.16)',
+                      transform: 'translateY(-2px) scale(1.02)',
+                      background: 'linear-gradient(135deg, #e0fcff 0%, #f8fafc 100%)',
+                    }
+                  }}>
                     <CardContent sx={{ flexGrow: 1 }}>
                       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
@@ -1135,64 +1845,27 @@ const DashboardPage: React.FC = () => {
                         />
                         
                         <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
-                          <Tooltip
-                            title={
-                              challenge.notes[challenge.completedDays] ? (
-                                <Box sx={{ p: 0.5 }}>
-                                  <Typography variant="caption" sx={{ display: 'block', fontWeight: 600, mb: 0.5 }}>
-                                    {new Date(
-                                      new Date(challenge.startDate).getTime() + 
-                                      (challenge.completedDays - 1) * 24 * 60 * 60 * 1000
-                                    ).toLocaleDateString(undefined, {
-                                      weekday: 'long',
-                                      month: 'short',
-                                      day: 'numeric'
-                                    })}
-                                  </Typography>
-                                  <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                                    {challenge.notes[challenge.completedDays]}
-                                  </Typography>
-                                </Box>
-                              ) : ''
-                            }
-                            arrow
-                            placement="top"
-                            enterDelay={500}
-                            leaveDelay={200}
-                            sx={{ 
-                              '& .MuiTooltip-tooltip': { 
-                                maxWidth: 300,
-                                bgcolor: 'background.paper',
-                                color: 'text.primary',
-                                border: '1px solid rgba(0,0,0,0.1)',
-                                boxShadow: '0 4px 15px rgba(0,0,0,0.1)',
-                                borderRadius: 2,
-                                p: 1.5
-                              },
-                              '& .MuiTooltip-arrow': {
-                                color: 'background.paper',
-                                '&::before': {
-                                  border: '1px solid rgba(0,0,0,0.1)'
-                                }
-                              }
-                            }}
-                          >
-                            <Chip 
-                              label={hasMarkedTodayComplete(challenge) 
-                                ? `Day ${challenge.completedDays} of ${challenge.duration} ✅` 
-                                : `Day ${challenge.completedDays + 1} of ${challenge.duration}`} 
-                              size="small" 
-                              color={hasMarkedTodayComplete(challenge) ? "success" : "primary"}
-                              variant={hasMarkedTodayComplete(challenge) ? "filled" : "outlined"}
-                              sx={{ 
-                                borderRadius: 1, 
-                                height: 28,
-                                fontWeight: hasMarkedTodayComplete(challenge) ? 600 : 400,
-                                cursor: challenge.notes[challenge.completedDays] ? 'pointer' : 'default'
-                              }}
+                            <Chip
+                              label={hasMarkedTodayComplete(challenge)
+                                ? `Day ${getCurrentDayForChallenge(challenge)} of ${challenge.duration} ✅`
+                                : `Day ${getCurrentDayForChallenge(challenge)} of ${challenge.duration}`}
+                              size="small"
+                              color={hasMarkedTodayComplete(challenge) ? 'success' : 'primary'}
+                              variant={hasMarkedTodayComplete(challenge) ? 'filled' : 'outlined'}
+                              sx={{ borderRadius: 1, height: 28, fontWeight: hasMarkedTodayComplete(challenge) ? 600 : 400 }}
                             />
-                          </Tooltip>
                           
+                          {(() => {
+                            const streak = getStreakForChallenge(challenge);
+                            return (
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1, mb: 1 }}>
+                                <LocalFireDepartmentIcon sx={{ color: streak > 0 ? 'orange' : 'grey.400', fontSize: 20 }} />
+                                <Typography variant="body2" fontWeight={600} color={streak > 0 ? 'orange' : 'text.secondary'}>
+                                  {streak > 0 ? `${streak}-day streak` : 'No streak'}
+                                </Typography>
+                              </Box>
+                            );
+                          })()}
                           <Tooltip title="Update Duration">
                             <IconButton
                               size="small"
@@ -1206,6 +1879,16 @@ const DashboardPage: React.FC = () => {
                               <DateRangeIcon fontSize="small" />
                             </IconButton>
                           </Tooltip>
+                        </Stack>
+                        
+                        {/* Add start and end dates */}
+                        <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                          <Typography variant="caption" color="text.secondary">
+                            Start: {new Date(challenge.startDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            End: {new Date(new Date(challenge.startDate).getTime() + challenge.duration * 24 * 60 * 60 * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                          </Typography>
                         </Stack>
                       </Box>
                       
@@ -1223,44 +1906,252 @@ const DashboardPage: React.FC = () => {
                             }
                           }}
                         >
-                          Today's challenge completed!
+                          <b>ONE DAY AT A TIME! ✅</b>
                         </Alert>
                       )}
                     </CardContent>
-                    <CardActions sx={{ p: 2, pt: 0 }}>
-                      <TextField
-                        size="small"
-                        placeholder="Add a note..."
-                        value={challengeIdForNote === challenge.id ? note : ''}
-                        onChange={(e) => handleNoteChange(e, challenge.id)}
-                        fullWidth
-                        disabled={hasMarkedTodayComplete(challenge)}
-                        sx={{ mr: 1 }}
-                      />
-                      <Button
-                        size="small"
-                        variant="contained"
-                        color="primary"
-                        onClick={() => handleMarkComplete(challenge.id)}
-                        disabled={challenge.completedDays >= challenge.duration || hasMarkedTodayComplete(challenge)}
-                        sx={{ 
-                          whiteSpace: 'nowrap',
-                          minWidth: 'auto',
-                          px: 1.5
-                        }}
-                      >
-                        <CheckCircleIcon sx={{ mr: 0.5 }} fontSize="small" /> 
-                        Done
-                      </Button>
+                    <CardActions sx={{ p: 2, pt: 0, display: 'flex', alignItems: 'center' }}>
+                      {hasMarkedTodayComplete(challenge) ? (
+                        <Box sx={{ display: 'flex', alignItems: 'center', width: '100%' }}>
+                          <Box sx={{ mr: 1, flex: 1 }}>
+                            <Typography variant="body2" color="text.secondary" noWrap sx={{ fontStyle: 'italic' }}>
+                              {challenge.notes[`${getTodayDayNumber(challenge)}`]?.content
+                                ? challenge.notes[`${getTodayDayNumber(challenge)}`]?.content.length > 30
+                                  ? challenge.notes[`${getTodayDayNumber(challenge)}`]?.content.substring(0, 30) + '...'
+                                  : challenge.notes[`${getTodayDayNumber(challenge)}`]?.content
+                                : 'Note not added'
+                              }
+                            </Typography>
+                          </Box>
+                          <Tooltip title="Edit today's note">
+                            <IconButton 
+                              size="small" 
+                              color="primary"
+                              onClick={() => handleOpenEditTodayNoteDialog(challenge)}
+                            >
+                              <EditNoteIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
+                        </Box>
+                      ) : (
+                        <Box sx={{ display: 'flex', alignItems: 'center', width: '100%' }}>
+                          <Box 
+                            component="textarea" 
+                            placeholder="Add a note..." 
+                            value={challengeIdForNote === challenge.id ? note : ''} 
+                            onChange={(e) => handleNoteChange(e, challenge.id)}
+                            rows={1}
+                            sx={{ 
+                              flex: 1,
+                              mr: 1, 
+                              p: 1.5,
+                              border: '1px solid',
+                              borderColor: 'divider',
+                              borderRadius: 1,
+                              fontSize: '16px',
+                              minHeight: '30px',    // optional: ensures a decent starting height
+                              maxHeight: '120px',   // optional: limits the height
+                              resize: 'none', // optional: allows user to resize vertically
+                              overflow: 'auto', 
+                              lineHeight: 1.5,
+                              boxSizing: 'border-box',
+                              '&:focus': {
+                                outline: 'none',
+                                borderColor: 'primary.main'
+                              },
+                              '::placeholder': {
+                                fontStyle: 'italic', // <-- This makes the placeholder italic
+                                color: 'text.secondary', // Optional: use theme's secondary text color
+                                opacity: 1, // Ensures the color is applied
+                              }
+                            }}
+                            onInput={e => {
+                              e.currentTarget.style.height = '40px'; // Reset to min height
+                              e.currentTarget.style.height = `${e.currentTarget.scrollHeight}px`;
+                            }}
+                          />
+                          <Button
+                            size="medium"
+                            variant="contained"
+                            color="primary"
+                            onClick={() => handleMarkComplete(challenge.id)}
+                            disabled={getCurrentDayForChallenge(challenge) > challenge.duration}
+                            sx={{ 
+                              whiteSpace: 'nowrap',
+                              minWidth: 'auto',
+                              px: 1.5
+                            }}
+                          >
+                            <CheckCircleIcon sx={{ mr: 0.5 }} fontSize="small" /> 
+                            Done
+                          </Button>
+                        </Box>
+                      )}
                     </CardActions>
                   </Card>
                 </Grid>
               </Zoom>
             ))}
           </Grid>
-        ) : (
-          // Analytics View
-          <ProgressAnalytics challenges={userData.challenges} />
+        )}
+        {currentTab === 1 && (
+          <Box sx={{ mt: 4 }}>
+            <Grid container spacing={3}>
+              {userData.challenges.map((challenge) => {
+                const streak = getStreakForChallenge(challenge);
+                return (
+                  <Grid item xs={12} sm={6} md={4} key={challenge.id}>
+                    <Paper
+                      elevation={4}
+                      sx={{
+                        p: 0,
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                        background: 'linear-gradient(135deg, #f8fafc 0%, #e3f6f5 100%)',
+                        boxShadow: '0 4px 24px 0 rgba(46,196,182,0.08)',
+                        transition: 'box-shadow 0.2s, transform 0.2s',
+                        '&:hover': {
+                          boxShadow: '0 8px 32px 0 rgba(46,196,182,0.16)',
+                          transform: 'translateY(-2px) scale(1.02)',
+                          background: 'linear-gradient(135deg, #e0fcff 0%, #f8fafc 100%)',
+                        },
+                      }}
+                      onClick={() => { setPreviewChallenge(challenge); setPreviewOpen(true); }}
+                    >
+                      <Stack direction="row" alignItems="center" spacing={2} sx={{ p: 3, pb: 2 }}>
+                        <Avatar sx={{ bgcolor: 'primary.main', color: 'white', width: 48, height: 48, fontSize: 28, boxShadow: '0 2px 8px 0 rgba(46,196,182,0.10)' }}>
+                          {getChallengeIcon(challenge.name)}
+                        </Avatar>
+                        <Box sx={{ flexGrow: 1 }}>
+                          <Typography variant="h6" fontWeight={700} sx={{ mb: 0.5, color: 'text.primary', fontSize: '1.15rem' }}>
+                            {challenge.name}
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
+                            Days Completed: <b>{Object.keys(challenge.notes || {}).length}</b> / {challenge.duration}
+                          </Typography>
+                          <Chip
+                            label={streak > 0 ? `Streak: ${streak} day${streak > 1 ? 's' : ''}` : 'No streak'}
+                            color={streak > 0 ? 'warning' : 'default'}
+                            size="small"
+                            icon={<LocalFireDepartmentIcon sx={{ color: streak > 0 ? 'orange' : 'grey.400' }} />}
+                            sx={{ fontWeight: 600, bgcolor: streak > 0 ? 'rgba(255,193,7,0.12)' : 'grey.100', color: streak > 0 ? 'orange' : 'text.secondary', mt: 0.5 }}
+                          />
+                          <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                            <Typography variant="caption" color="text.secondary">
+                              Start: {new Date(challenge.startDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              End: {new Date(new Date(challenge.startDate).getTime() + challenge.duration * 24 * 60 * 60 * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                            </Typography>
+                          </Stack>
+                        </Box>
+                      </Stack>
+                    </Paper>
+                  </Grid>
+                );
+              })}
+            </Grid>
+            {/* Preview Dialog */}
+            <Dialog
+              open={previewOpen && !!previewChallenge}
+              onClose={() => setPreviewOpen(false)}
+              maxWidth="md"
+              fullWidth
+              PaperProps={{ sx: { borderRadius: 3 } }}
+            >
+              <DialogTitle>
+                <Typography variant="h6" fontWeight={700}>{previewChallenge?.name}</Typography>
+              </DialogTitle>
+              <DialogContent>
+                {previewChallenge && (
+                  <Box sx={{ mt: 2 }}>
+                    <Grid container spacing={1}>
+                      {Array.from({ length: previewChallenge.duration }).map((_, i) => {
+                        const dayNum = i + 1;
+                        const startDate = new Date(previewChallenge.startDate);
+                        const cellDate = new Date(startDate.getTime());
+                        cellDate.setDate(startDate.getDate() + i);
+                        const isLogged = dayNum <= previewChallenge.completedDays;
+                        const note = previewChallenge.notes[`${dayNum}`];
+                        const tooltipContent = note
+                          ? (<Box sx={{p:1}}><Typography variant="caption" fontWeight={600}>{cellDate.toLocaleDateString()}</Typography><Typography variant="body2" sx={{whiteSpace:'pre-wrap'}}>{note.content}</Typography></Box>)
+                          : cellDate.toLocaleDateString();
+                        return (
+                          <Grid item xs={2} sm={1} key={dayNum}>
+                            {isMobile ? (
+                              <Box
+                                sx={{
+                                  width: 40,
+                                  height: 40,
+                                  bgcolor: isLogged ? 'primary.main' : 'background.paper',
+                                  color: isLogged ? 'common.white' : 'text.secondary',
+                                  borderRadius: 2.5,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  fontWeight: 700,
+                                  fontSize: '1.05rem',
+                                  cursor: 'pointer',
+                                  border: isLogged ? '2.5px solid #2ec4b6' : '1.5px solid #e0e0e0',
+                                  boxShadow: isLogged ? '0 2px 8px 0 rgba(46,196,182,0.10)' : 'none',
+                                  transition: 'background 0.2s, color 0.2s, box-shadow 0.2s',
+                                  '&:active': {
+                                    boxShadow: '0 0 0 2px #2ec4b6',
+                                  },
+                                }}
+                                onClick={() => { setCellDialogContent({date: cellDate.toLocaleDateString(), note: note?.content || ''}); setCellDialogOpen(true); }}
+                              >
+                                {dayNum}
+                              </Box>
+                            ) : (
+                              <Tooltip title={tooltipContent} arrow>
+                                <Box
+                                  sx={{
+                                    width: 40,
+                                    height: 40,
+                                    bgcolor: isLogged ? 'primary.main' : 'background.paper',
+                                    color: isLogged ? 'common.white' : 'text.secondary',
+                                    borderRadius: 2.5,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontWeight: 700,
+                                    fontSize: '1.05rem',
+                                    cursor: 'pointer',
+                                    border: isLogged ? '2.5px solid #2ec4b6' : '1.5px solid #e0e0e0',
+                                    boxShadow: isLogged ? '0 2px 8px 0 rgba(46,196,182,0.10)' : 'none',
+                                    transition: 'background 0.2s, color 0.2s, box-shadow 0.2s',
+                                    '&:hover': {
+                                      boxShadow: isLogged ? '0 0 0 2px #2ec4b6' : '0 0 0 2px #e0e0e0',
+                                      bgcolor: isLogged ? 'primary.dark' : 'grey.100',
+                                    },
+                                  }}
+                                >
+                                  {dayNum}
+                                </Box>
+                              </Tooltip>
+                            )}
+                          </Grid>
+                        );
+                      })}
+                    </Grid>
+                    {/* Legend */}
+                    <Stack direction="row" spacing={2} alignItems="center" sx={{ mt: 3, mb: 1 }}>
+                      <Box sx={{ width: 24, height: 24, bgcolor: 'primary.main', borderRadius: 1, border: '2px solid #2ec4b6', mr: 1 }} />
+                      <Typography variant="body2" color="text.secondary">Logged Day</Typography>
+                      <Box sx={{ width: 24, height: 24, bgcolor: 'background.paper', borderRadius: 1, border: '1.5px solid #e0e0e0', ml: 3, mr: 1 }} />
+                      <Typography variant="body2" color="text.secondary">Not Logged</Typography>
+                    </Stack>
+                  </Box>
+                )}
+              </DialogContent>
+            </Dialog>
+          </Box>
+        )}
+        {currentTab === 2 && (
+          <Box sx={{ mt: 4 }}>
+            <NotesHistoryPage />
+          </Box>
         )}
 
         {/* Empty state when no challenges */}
@@ -1292,7 +2183,7 @@ const DashboardPage: React.FC = () => {
                 No Challenges Yet
               </Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 3, maxWidth: '400px', mx: 'auto' }}>
-                Start building resilience by adding your first challenge. Click the + button in the top-right corner to get started!
+                Start building resilience by adding your first challenge.
               </Typography>
               <Button
                 variant="contained"
@@ -1315,50 +2206,12 @@ const DashboardPage: React.FC = () => {
             sx: { borderRadius: 2, minWidth: 180 }
           }}
         >
-          <MenuItem onClick={handleEditLog} sx={{ py: 1.5 }}>
-            <EditNoteIcon fontSize="small" sx={{ mr: 1, color: 'primary.main' }} />
-            Edit Note
-          </MenuItem>
+          {/* Removed Edit Note button from menu */}
           <MenuItem onClick={handleDeleteLog} sx={{ py: 1.5 }}>
             <DeleteIcon fontSize="small" sx={{ mr: 1, color: 'error.main' }} />
             Remove Log
           </MenuItem>
         </Menu>
-
-        {/* Edit Log Dialog */}
-        <Dialog
-          open={editLogDialog}
-          onClose={() => setEditLogDialog(false)}
-          PaperProps={{
-            sx: { borderRadius: 3, maxWidth: '500px', width: '100%' }
-          }}
-        >
-          <DialogTitle sx={{ pb: 1 }}>
-            <Typography variant="h6" fontWeight={600}>Edit Log</Typography>
-          </DialogTitle>
-          <DialogContent>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              Update your note for this day's challenge.
-            </Typography>
-            <TextField
-              autoFocus
-              fullWidth
-              multiline
-              minRows={4}
-              margin="dense"
-              label="Your Note"
-              value={editNote}
-              onChange={(e) => setEditNote(e.target.value)}
-              variant="outlined"
-            />
-          </DialogContent>
-          <DialogActions sx={{ px: 3, pb: 3 }}>
-            <Button onClick={() => setEditLogDialog(false)}>Cancel</Button>
-            <Button onClick={handleSaveEditedLog} variant="contained" color="primary">
-              Save Changes
-            </Button>
-          </DialogActions>
-        </Dialog>
 
         {/* Daily Note Dialog */}
         <Dialog 
@@ -1375,12 +2228,8 @@ const DashboardPage: React.FC = () => {
               <Avatar sx={{ bgcolor: 'primary.main', width: 32, height: 32 }}>
                 <EditNoteIcon fontSize="small" />
               </Avatar>
-              <Typography variant="h6" fontWeight={600}>
-                Daily Reflection - {new Date().toLocaleDateString(undefined, { 
-                  weekday: 'long',
-                  month: 'long', 
-                  day: 'numeric'
-                })}
+              <Typography variant="h6" fontWeight={600} component="span">
+                Daily Reflection - {getFormattedDate()}
               </Typography>
             </Stack>
           </DialogTitle>
@@ -1389,6 +2238,8 @@ const DashboardPage: React.FC = () => {
               Record your thoughts, reflections, and how you felt today about your challenges.
             </Typography>
             <TextField
+              id="daily-reflection"
+              name="dailyReflection"
               autoFocus
               fullWidth
               multiline
@@ -1427,13 +2278,13 @@ const DashboardPage: React.FC = () => {
               This action cannot be undone!
             </Alert>
             <Typography>
-              Are you sure you want to reset all challenges? This will delete all your progress and return to the welcome page.
+              Are you sure you want to reset all challenges? This will delete all of your challenges and it's progress.
             </Typography>
           </DialogContent>
           <DialogActions sx={{ px: 3, pb: 3 }}>
             <Button onClick={() => setResetDialogOpen(false)} variant="outlined">Cancel</Button>
             <Button onClick={handleResetAll} color="error" variant="contained">
-              Reset All
+              Reset All Challenges
             </Button>
           </DialogActions>
         </Dialog>
@@ -1451,7 +2302,7 @@ const DashboardPage: React.FC = () => {
               <Avatar sx={{ bgcolor: 'error.light', width: 32, height: 32 }}>
                 <WarningAmberIcon fontSize="small" />
               </Avatar>
-              <Typography variant="h6" fontWeight={600}>Delete Challenge</Typography>
+              <Typography variant="h6" fontWeight={600} component="span">Delete Challenge</Typography>
             </Stack>
           </DialogTitle>
           <DialogContent>
@@ -1509,7 +2360,7 @@ const DashboardPage: React.FC = () => {
               <Avatar sx={{ bgcolor: 'primary.main', width: 32, height: 32 }}>
                 <FitnessCenterIcon fontSize="small" />
               </Avatar>
-              <Typography variant="h6" fontWeight={600}>Add New Challenge</Typography>
+              <Typography variant="h6" fontWeight={600} component="span">Add New Challenge</Typography>
             </Stack>
           </DialogTitle>
           <DialogContent>
@@ -1517,7 +2368,8 @@ const DashboardPage: React.FC = () => {
               Define a new challenge to build your resilience muscles.
             </Typography>
             <TextField
-              autoFocus
+              id="add-challenge-name"
+              name="challengeName"
               margin="dense"
               label="Challenge Name"
               fullWidth
@@ -1528,14 +2380,16 @@ const DashboardPage: React.FC = () => {
               helperText={`${newChallenge.name.length}/30 characters`}
             />
             <TextField
+              id="add-challenge-duration"
+              name="challengeDuration"
               margin="dense"
               label="Duration (days)"
               type="number"
               fullWidth
               value={newChallenge.duration}
               onChange={(e) => setNewChallenge({ ...newChallenge, duration: e.target.value })}
-              inputProps={{ min: 10 }}
-              helperText="Challenge duration must be at least 10 days"
+              inputProps={{ min: 10, max: 365 }}
+              helperText="Challenge duration must be between 10 and 365 days"
             />
           </DialogContent>
           <DialogActions sx={{ px: 3, pb: 3 }}>
@@ -1543,7 +2397,7 @@ const DashboardPage: React.FC = () => {
             <Button 
               onClick={handleAddChallenge} 
               variant="contained" 
-              disabled={!newChallenge.name || !newChallenge.duration || parseInt(newChallenge.duration) < 10}
+              disabled={!newChallenge.name || !newChallenge.duration || parseInt(newChallenge.duration) < 10 || parseInt(newChallenge.duration) > 365}
             >
               Add Challenge
             </Button>
@@ -1656,22 +2510,24 @@ const DashboardPage: React.FC = () => {
               <Avatar sx={{ bgcolor: 'primary.main', width: 32, height: 32 }}>
                 <DateRangeIcon fontSize="small" />
               </Avatar>
-              <Typography variant="h6" fontWeight={600}>Update Challenge Duration</Typography>
+              <Typography variant="h6" fontWeight={600} component="span">Update Challenge Duration</Typography>
             </Stack>
           </DialogTitle>
           <DialogContent>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              Set a new duration for your challenge. The duration must be at least 10 days and cannot be less than your completed days.
+              Set a new duration for your challenge. The duration must be at least 10 days and cannot be more than 365 days.
             </Typography>
             <TextField
+              id="update-challenge-duration"
+              name="updateChallengeDuration"
               autoFocus
               fullWidth
               type="number"
               label="New Duration (days)"
               value={newDuration}
               onChange={(e) => setNewDuration(e.target.value)}
-              inputProps={{ min: 10 }}
-              helperText="Minimum duration is 10 days"
+              inputProps={{ min: 10, max: 365 }}
+              helperText="Duration must be between 10 and 365 days"
               sx={{ mt: 1 }}
             />
           </DialogContent>
@@ -1680,7 +2536,7 @@ const DashboardPage: React.FC = () => {
             <Button 
               onClick={handleUpdateDuration}
               variant="contained"
-              disabled={!newDuration || parseInt(newDuration) < 10}
+              disabled={!newDuration || parseInt(newDuration) < 10 || parseInt(newDuration) > 365}
             >
               Update Duration
             </Button>
@@ -1700,7 +2556,7 @@ const DashboardPage: React.FC = () => {
               <Avatar sx={{ bgcolor: 'primary.main', width: 32, height: 32 }}>
                 <LogoutIcon fontSize="small" />
               </Avatar>
-              <Typography variant="h6" fontWeight={600}>Sign Out</Typography>
+              <Typography variant="h6" fontWeight={600} component="span">Sign Out</Typography>
             </Stack>
           </DialogTitle>
           <DialogContent>
@@ -1717,9 +2573,155 @@ const DashboardPage: React.FC = () => {
             </Button>
           </DialogActions>
         </Dialog>
+
+        {/* Delete Note Confirmation Dialog */}
+        <Dialog
+          open={deleteNoteDialogOpen}
+          onClose={() => setDeleteNoteDialogOpen(false)}
+          PaperProps={{
+            sx: { borderRadius: 3 }
+          }}
+        >
+          <DialogTitle>
+            <Typography variant="h6" fontWeight={600} component="span">Delete Daily Reflection</Typography>
+          </DialogTitle>
+          <DialogContent>
+            <Typography variant="body1">
+              Are you sure you want to delete today&apos;s reflection? This action cannot be undone.
+            </Typography>
+          </DialogContent>
+          <DialogActions sx={{ p: 2.5 }}>
+            <Button onClick={() => setDeleteNoteDialogOpen(false)}>Cancel</Button>
+            <Button 
+              onClick={handleDeleteDailyNote} 
+              variant="contained" 
+              color="error"
+            >
+              Delete
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Add Note Dialog */}
+        <Dialog
+          open={noteDialogOpen}
+          onClose={handleCloseNoteDialog}
+          maxWidth="md"
+          fullWidth
+          PaperProps={{
+            sx: { borderRadius: 3 }
+          }}
+        >
+          <DialogTitle sx={{ pb: 1 }}>
+            <Stack direction="row" spacing={1.5} alignItems="center">
+              <Avatar sx={{ bgcolor: 'primary.main', width: 32, height: 32 }}>
+                <EditNoteIcon fontSize="small" />
+              </Avatar>
+              <Box>
+                <Typography variant="h6" fontWeight={600} component="span">
+                  Add Note for Challenge
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {selectedChallengeForNote?.name}
+                </Typography>
+              </Box>
+            </Stack>
+          </DialogTitle>
+          <DialogContent>
+            <Typography variant="body2" sx={{ mb: 3, color: 'text.secondary' }}>
+              Write your thoughts, progress, and reflections about today&apos;s challenge.
+            </Typography>
+            <TextField
+              id="add-note-dialog"
+              name="addNoteDialog"
+              autoFocus
+              fullWidth
+              multiline
+              minRows={8}
+              maxRows={15}
+              variant="outlined"
+              placeholder="How did you do today? What challenges did you face? What did you learn?"
+              value={note}
+              onChange={(e) => selectedChallengeForNote && handleNoteChange(e, selectedChallengeForNote.id)}
+              sx={{
+                '& .MuiOutlinedInput-root': {
+                  background: 'rgba(0, 0, 0, 0.01)'
+                }
+              }}
+            />
+          </DialogContent>
+          <DialogActions sx={{ px: 3, pb: 3 }}>
+            <Button onClick={handleCloseNoteDialog}>Cancel</Button>
+            <Button 
+              onClick={handleSaveNoteAndComplete}
+              variant="contained" 
+              color="primary"
+              disabled={!note.trim() || (selectedChallengeForNote ? note.trim() === (selectedChallengeForNote.notes[selectedChallengeForNote.completedDays + 1]?.content || '') : false)}
+            >
+              Save & Complete Challenge
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Edit Today's Note Dialog */}
+        <Dialog
+          open={editTodayNoteDialogOpen}
+          onClose={() => setEditTodayNoteDialogOpen(false)}
+          maxWidth="md"
+          fullWidth
+          PaperProps={{ sx: { borderRadius: 3 } }}
+        >
+          <DialogTitle sx={{ pb: 1 }}>
+            <Stack direction="row" spacing={1.5} alignItems="center">
+              <Avatar sx={{ bgcolor: 'primary.main', width: 32, height: 32 }}>
+                <EditNoteIcon fontSize="small" />
+              </Avatar>
+              <Box>
+                <Typography variant="h6" fontWeight={600} component="span">
+                  Edit Today&apos;s Note for <i>{userData.challenges.find(c => c.id === editTodayChallengeId)?.name}</i> Challenge
+                </Typography>
+              </Box>
+            </Stack>
+          </DialogTitle>
+          <DialogContent>
+            <Typography variant="body2" sx={{ mb: 3, color: 'text.secondary' }}>
+              Record your thoughts, reflections, and how you felt today.
+            </Typography>
+            <TextField
+              id="edit-today-note"
+              name="editTodayNote"
+              autoFocus
+              fullWidth
+              multiline
+              minRows={8}
+              maxRows={15}
+              variant="outlined"
+              placeholder="How did you do today? What challenges did you face? What did you learn?"
+              value={editTodayNote}
+              onChange={(e) => setEditTodayNote(e.target.value)}
+              sx={{
+                '& .MuiOutlinedInput-root': {
+                  background: 'rgba(0, 0, 0, 0.01)'
+                }
+              }}
+            />
+          </DialogContent>
+          <DialogActions sx={{ px: 3, pb: 3 }}>
+            <Button onClick={() => setEditTodayNoteDialogOpen(false)}>Cancel</Button>
+            <Button 
+              onClick={handleSaveEditTodayNote}
+              variant="contained" 
+              color="primary"
+              disabled={!editTodayNote.trim() || (editTodayChallengeId ? (userData.challenges.find(c => c.id === editTodayChallengeId)?.notes[(userData.challenges.find(c => c.id === editTodayChallengeId)?.completedDays || 0) + 1]?.content === editTodayNote) : false)}
+            >
+              Save
+            </Button>
+          </DialogActions>
+        </Dialog>
       </Box>
       
       {/* Custom Menu */}
+      <ClickAwayListener onClickAway={() => { if (menuOpen) setMenuOpen(false); }}>
       <Box
         sx={{
           position: 'fixed',
@@ -1810,11 +2812,73 @@ const DashboardPage: React.FC = () => {
           <MenuIcon />
         </Fab>
       </Box>
+      </ClickAwayListener>
       
       {/* Wrap ChatAssistant in ErrorBoundary */}
       <ErrorBoundary>
         <ChatAssistant userData={userData} />
       </ErrorBoundary>
+
+      
+
+      {isMobile && (
+        <Dialog open={cellDialogOpen && !!cellDialogContent} onClose={() => setCellDialogOpen(false)}>
+          <DialogTitle>{cellDialogContent?.date}</DialogTitle>
+          <DialogContent>
+            {cellDialogContent?.note ? (
+              <Typography variant="body1" sx={{whiteSpace:'pre-wrap'}}>{cellDialogContent.note}</Typography>
+            ) : (
+              <Typography variant="body2" color="text.secondary">No note for this day.</Typography>
+            )}
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Delete All Daily Reflection Notes Dialog */}
+      <Dialog
+        open={deleteAllNotesDialogOpen}
+        onClose={() => setDeleteAllNotesDialogOpen(false)}
+        PaperProps={{ sx: { borderRadius: 3, maxWidth: '500px', width: '100%' } }}
+      >
+        <DialogTitle sx={{ color: 'error.main' }}>Delete All Daily Reflection Notes</DialogTitle>
+        <DialogContent>
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            This action cannot be undone!
+          </Alert>
+          <Typography>
+            Are you sure you want to delete <b>all</b> your daily reflection notes? This will permanently remove all your daily reflections.
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 3 }}>
+          <Button onClick={() => setDeleteAllNotesDialogOpen(false)} variant="outlined">Cancel</Button>
+          <Button onClick={handleDeleteAllDailyNotes} color="error" variant="contained" startIcon={<DeleteIcon />}>
+            Delete All Notes
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Remove Log Confirmation Dialog */}
+      <Dialog
+        open={deleteLogDialogOpen}
+        onClose={() => setDeleteLogDialogOpen(false)}
+        PaperProps={{ sx: { borderRadius: 3, maxWidth: '500px', width: '100%' } }}
+      >
+        <DialogTitle sx={{ color: 'error.main' }}>Remove Log</DialogTitle>
+        <DialogContent>
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            This action cannot be undone!
+          </Alert>
+          <Typography>
+            Are you sure you want to remove this log? This will delete the note for the day and reduce your completed days count.
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 3 }}>
+          <Button onClick={() => setDeleteLogDialogOpen(false)} variant="outlined">Cancel</Button>
+          <Button onClick={confirmDeleteLog} color="error" variant="contained" startIcon={<DeleteIcon />}>
+            Remove Log
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Container>
   );
 };

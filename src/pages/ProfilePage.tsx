@@ -24,12 +24,16 @@ import EmailIcon from '@mui/icons-material/Email';
 import EditIcon from '@mui/icons-material/Edit';
 import VisibilityIcon from '@mui/icons-material/Visibility';
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
+import ArrowBackIosNewIcon from '@mui/icons-material/ArrowBackIosNew';
 import { EmailAuthProvider, reauthenticateWithCredential, updateProfile } from 'firebase/auth';
 import { useAuth } from '../contexts/AuthContext';
-import { updateUserData } from '../services/firestore';
+import { updateUserData, getUserData } from '../services/firestore';
+import { upsertChallengeData } from '../services/pinecone';
+import { useNavigate } from 'react-router-dom';
 
 const ProfilePage: React.FC = () => {
   const { currentUser, updatePassword } = useAuth();
+  const navigate = useNavigate();
   const [openPasswordDialog, setOpenPasswordDialog] = useState(false);
   const [openNameDialog, setOpenNameDialog] = useState(false);
   const [oldPassword, setOldPassword] = useState('');
@@ -141,9 +145,23 @@ const ProfilePage: React.FC = () => {
 
       // Update name in Firestore
       await updateUserData(currentUser.uid, { name: newName.trim() });
-      
+
       setSuccess('Name updated successfully');
       setOpenNameDialog(false);
+
+      // --- Pinecone: upsert all challenges with new name ---
+      try {
+        const latestUserData = await getUserData(currentUser.uid);
+        if (latestUserData && latestUserData.challenges) {
+          for (const challenge of latestUserData.challenges) {
+            await upsertChallengeData(currentUser.uid, challenge);
+          }
+          console.log('[PINECONE][UPSERT] All challenges updated after name change.');
+        }
+      } catch (pineconeError) {
+        console.error('[PINECONE][UPSERT] Error updating Pinecone after name change:', pineconeError);
+      }
+      // -----------------------------------------------------
     } catch (error) {
       console.error('Error updating name:', error);
       setError('Failed to update name. Please try again.');
@@ -153,96 +171,155 @@ const ProfilePage: React.FC = () => {
   };
 
   return (
-    <Container maxWidth="md" sx={{ py: 4 }}>
+    <Container maxWidth="md" sx={{ py: 6, display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '80vh' }}>
       <Paper 
-        elevation={3} 
+        elevation={6} 
         sx={{ 
-          p: 4, 
-          borderRadius: 3,
-          background: 'linear-gradient(135deg, rgba(255,255,255,1) 0%, rgba(245,248,255,1) 100%)'
+          p: { xs: 2, sm: 4 }, 
+          borderRadius: 4,
+          maxWidth: 480,
+          width: '100%',
+          mx: 'auto',
+          boxShadow: '0 8px 32px 0 rgba(46,196,182,0.10)',
+          background: 'linear-gradient(135deg, #f8fafc 0%, #e3f6f5 100%)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          position: 'relative',
         }}
       >
-        <Box sx={{ textAlign: 'center', mb: 4 }}>
-          <Avatar 
-            sx={{ 
-              width: 80, 
-              height: 80, 
-              bgcolor: '#2ec4b6', 
-              mx: 'auto',
-              mb: 2
-            }}
-          >
-            <AccountCircleIcon sx={{ fontSize: 40 }} />
-          </Avatar>
-          <Typography variant="h4" component="h1" fontWeight={700} gutterBottom>
+        {/* Back Button */}
+        <IconButton
+          onClick={() => navigate('/dashboard')}
+          sx={{
+            position: 'absolute',
+            top: 18,
+            left: 18,
+            bgcolor: 'white',
+            color: 'primary.main',
+            border: '2px solid',
+            borderColor: 'primary.main',
+            boxShadow: '0 1px 4px 0 rgba(46,196,182,0.10)',
+            transition: 'all 0.2s',
+            '&:hover': {
+              bgcolor: 'primary.main',
+              color: 'white',
+              borderColor: 'primary.main',
+            },
+            zIndex: 2,
+          }}
+          size="small"
+        >
+          <ArrowBackIosNewIcon fontSize="small" />
+        </IconButton>
+        <Box sx={{
+          width: '100%',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          mb: 3,
+        }}>
+          <Box sx={{
+            background: 'linear-gradient(135deg, #2ec4b6 0%, #ff9f1c 100%)',
+            borderRadius: '50%',
+            p: 0.5,
+            mb: 1.2,
+            boxShadow: '0 4px 16px 0 rgba(46,196,182,0.10)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}>
+            <Avatar 
+              sx={{ 
+                width: 64, 
+                height: 64, 
+                bgcolor: 'white',
+                color: '#2ec4b6',
+                border: '3px solid #2ec4b6',
+                fontSize: 36,
+              }}
+            >
+              <AccountCircleIcon sx={{ fontSize: 40 }} />
+            </Avatar>
+          </Box>
+          <Typography variant="h4" component="h1" fontWeight={700} gutterBottom sx={{ color: '#222', mb: 0 }}>
             Profile
           </Typography>
         </Box>
 
         {error && (
-          <Alert severity="error" sx={{ mb: 3, borderRadius: 2 }}>
+          <Alert severity="error" sx={{ mb: 3, borderRadius: 2, width: '100%' }}>
             {error}
           </Alert>
         )}
 
         {success && (
-          <Alert severity="success" sx={{ mb: 3, borderRadius: 2 }}>
+          <Alert severity="success" sx={{ mb: 3, borderRadius: 2, width: '100%' }}>
             {success}
           </Alert>
         )}
 
-        <Stack spacing={3}>
-          <Box>
-            <Stack direction="row" spacing={2} alignItems="center">
-              <AccountCircleIcon color="primary" />
-              <Typography variant="h6">Name</Typography>
-              <IconButton 
-                size="small" 
-                color="primary" 
-                onClick={() => {
-                  setNewName(currentUser?.displayName || '');
-                  setOpenNameDialog(true);
-                }}
-                sx={{ ml: 'auto' }}
-              >
-                <EditIcon fontSize="small" />
-              </IconButton>
-            </Stack>
-            <Typography variant="body1" sx={{ mt: 1, ml: 4 }}>
-              {currentUser?.displayName || 'No name set'}
-            </Typography>
-          </Box>
-
-          <Divider />
-
-          <Box>
-            <Stack direction="row" spacing={2} alignItems="center">
-              <EmailIcon color="primary" />
-              <Typography variant="h6">Email</Typography>
-            </Stack>
-            <Typography variant="body1" sx={{ mt: 1, ml: 4 }}>
-              {currentUser?.email}
-            </Typography>
-          </Box>
-
-          <Divider />
-
-          <Box>
-            <Stack direction="row" spacing={2} alignItems="center">
-              <LockIcon color="primary" />
-              <Typography variant="h6">Password</Typography>
-            </Stack>
-            <Box sx={{ mt: 1, ml: 4 }}>
-              <Typography variant="body1" sx={{ mb: 2 }}>
-                ••••••••
-              </Typography>
-              <Button 
-                variant="outlined" 
-                onClick={() => setOpenPasswordDialog(true)}
-              >
-                Change Password
-              </Button>
+        <Stack spacing={0} sx={{ width: '100%' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, py: 2 }}>
+            <AccountCircleIcon color="primary" sx={{ fontSize: 28 }} />
+            <Box sx={{ flexGrow: 1 }}>
+              <Typography variant="subtitle2" color="text.secondary">Name</Typography>
+              <Typography variant="h6" fontWeight={600}>{currentUser?.displayName || '—'}</Typography>
             </Box>
+            <IconButton 
+              size="small" 
+              onClick={() => setOpenNameDialog(true)}
+              sx={{
+                bgcolor: 'white',
+                color: 'primary.main',
+                border: '2px solid',
+                borderColor: 'primary.main',
+                boxShadow: '0 1px 4px 0 rgba(46,196,182,0.10)',
+                transition: 'all 0.2s',
+                '&:hover': {
+                  bgcolor: 'primary.main',
+                  color: 'white',
+                  borderColor: 'primary.main',
+                },
+              }}
+            >
+              <EditIcon fontSize="small" />
+            </IconButton>
+          </Box>
+          <Divider />
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, py: 2 }}>
+            <EmailIcon color="primary" sx={{ fontSize: 28 }} />
+            <Box sx={{ flexGrow: 1 }}>
+              <Typography variant="subtitle2" color="text.secondary">Email</Typography>
+              <Typography variant="h6" fontWeight={600}>{currentUser?.email || '—'}</Typography>
+            </Box>
+          </Box>
+          <Divider />
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, py: 2 }}>
+            <LockIcon color="primary" sx={{ fontSize: 28 }} />
+            <Box sx={{ flexGrow: 1 }}>
+              <Typography variant="subtitle2" color="text.secondary">Password</Typography>
+              <Typography variant="h6" fontWeight={600} sx={{ letterSpacing: 2 }}>••••••••</Typography>
+            </Box>
+            <Button
+              variant="outlined"
+              onClick={() => setOpenPasswordDialog(true)}
+              sx={{
+                borderRadius: 2,
+                fontWeight: 600,
+                borderColor: 'primary.main',
+                color: 'primary.main',
+                px: 2.5,
+                '&:hover': {
+                  bgcolor: 'primary.main',
+                  color: 'white',
+                  borderColor: 'primary.main',
+                },
+                transition: 'all 0.2s',
+              }}
+            >
+              Change Password
+            </Button>
           </Box>
         </Stack>
 

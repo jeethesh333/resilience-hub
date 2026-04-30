@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Box,
   Paper,
@@ -25,7 +25,7 @@ import PersonIcon from '@mui/icons-material/Person';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import SearchIcon from '@mui/icons-material/Search';
-import { User } from '../types';
+import { User, Challenge} from '../types';
 
 interface Message {
   id: string;
@@ -34,18 +34,12 @@ interface Message {
   timestamp: Date;
 }
 
-interface ChatAssistantProps {
-  userData: User;
-}
-
 // Initialize Gemini API in a secure way
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-const API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent';
-
-// Validate API key
 if (!API_KEY) {
-  console.error('Gemini API key is not configured. Please check your environment variables.');
+  console.error('Gemini API key is not set. Please set VITE_GEMINI_API_KEY in your environment variables.');
 }
+const API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent';
 
 // Function to convert markdown to plain text
 const convertMarkdownToPlainText = (markdown: string): string => {
@@ -60,6 +54,58 @@ const convertMarkdownToPlainText = (markdown: string): string => {
     .trim();
 };
 
+function getLocalDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+const getTodayDayNumber = (challenge: any): number => {
+  const startDate = new Date(challenge.startDate);
+  const now = new Date();
+  
+  // Set both dates to start of day for accurate comparison
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const challengeStart = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+  
+  // Calculate days since start (floor to handle time differences)
+  const daysSinceStart = Math.floor((todayStart.getTime() - challengeStart.getTime()) / (1000 * 60 * 60 * 24));
+  
+  // Today's day number (1-indexed)
+  return daysSinceStart + 1;
+};
+
+// Add this function to fetch relevant context from Pinecone
+const getRelevantContext = async (query: string, userId: string) => {
+  try {
+    const response = await fetch('/api/query-pinecone', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        userId,
+        query,
+      }),
+    });
+    
+    if (!response.ok) {
+      throw new Error('Failed to fetch context');
+    }
+    
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('Error fetching context:', error);
+    return { matches: [] }; // Return empty matches array on error
+  }
+};
+
+interface ChatAssistantProps {
+  userData: User;
+}
+
 const ChatAssistant: React.FC<ChatAssistantProps> = ({ userData }) => {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -71,11 +117,146 @@ const ChatAssistant: React.FC<ChatAssistantProps> = ({ userData }) => {
   const [showCopyNotification, setShowCopyNotification] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const starterQuestions = [
-    "How can I stay motivated during my challenge?",
-    "What are some tips for building resilience?",
-    "How do I handle setbacks in my journey?"
-  ];
+  // Helper function to calculate streak for a challenge
+  const getStreakForChallenge = (challenge: any) => {
+    if (!challenge || !challenge.notes) return 0;
+    
+    // Get all completed days (keys are day numbers stored as strings)
+    const completedDayNumbers = Object.keys(challenge.notes)
+      .map(day => parseInt(day, 10))
+      .sort((a, b) => b - a); // Sort in descending order (most recent first)
+      
+    if (completedDayNumbers.length === 0) {
+      return 0;
+    }
+    
+    // Get current day number since start
+    const todayDayNumber = getTodayDayNumber(challenge);
+    
+    // Get the most recent completed day
+    const mostRecentCompletedDay = completedDayNumbers[0];
+    
+    // If most recent completion isn't today or yesterday, streak is broken
+    if (todayDayNumber - mostRecentCompletedDay > 1) {
+      return 0;
+    }
+    
+    // Start with streak of 1 for the most recent day
+    let streak = 1;
+    // Initialize the expected previous day
+    let expectedPreviousDay = mostRecentCompletedDay - 1;
+    
+    // Loop through all completed days (already sorted in descending order)
+    for (let i = 1; i < completedDayNumbers.length; i++) {
+      const completedDay = completedDayNumbers[i];
+      
+      // If this day matches the expected previous day, increment streak
+      if (completedDay === expectedPreviousDay) {
+        streak++;
+        expectedPreviousDay--; // Decrement for next iteration
+      } else {
+        // Break the streak - we hit a gap
+        break;
+      }
+    }
+    
+    return streak;
+  };
+
+  // Get greeting based on time of day
+  const getTimeBasedGreeting = () => {
+    const hour = new Date().getHours();
+    if (hour < 12) return "Good morning";
+    if (hour < 18) return "Good afternoon";
+    return "Good evening";
+  };
+
+  // Generate personalized starter questions based on user's challenges
+  const getPersonalizedStarterQuestions = () => {
+    // Default questions if no challenges or fewer than 3 challenges
+    const defaultQuestions = [
+      "How can I stay motivated during my challenge?",
+      "What are some tips for building resilience?",
+      "How do I handle setbacks in my journey?"
+    ];
+
+    if (!userData?.challenges || userData.challenges.length === 0) {
+      return defaultQuestions;
+    }
+
+    const personalQuestions = [];
+    
+    // Get a random challenge to generate question about
+    const randomChallenge = userData.challenges[Math.floor(Math.random() * userData.challenges.length)];
+    
+    // If user has challenges with progress, create specific questions
+    const hasStartedChallenges = userData.challenges.some((c: Challenge) => c.completedDays > 0);
+    const hasHighProgressChallenges = userData.challenges.some((c: Challenge) => (c.completedDays / c.duration) >= 0.7);
+    const hasLowProgressChallenges = userData.challenges.some((c: Challenge) => c.completedDays > 0 && (c.completedDays / c.duration) < 0.3);
+    
+    // Add specific questions based on challenges
+    if (randomChallenge) {
+      personalQuestions.push(`How can I improve my ${randomChallenge.name} challenge?`);
+    }
+    
+    if (hasStartedChallenges) {
+      personalQuestions.push("What should I do when I feel like skipping a day?");
+    }
+    
+    if (hasHighProgressChallenges) {
+      personalQuestions.push("How can I maintain my progress long-term?");
+    }
+    
+    if (hasLowProgressChallenges) {
+      personalQuestions.push("How can I build momentum with my challenges?");
+    }
+    
+    // Ensure we have at least 3 questions by adding defaults if needed
+    while (personalQuestions.length < 3) {
+      const defaultQuestion = defaultQuestions.shift();
+      if (defaultQuestion) {
+        personalQuestions.push(defaultQuestion);
+      } else {
+        break; // Just in case we run out of default questions
+      }
+    }
+    
+    return personalQuestions;
+  };
+
+  // Create personalized welcome message
+  const getPersonalizedWelcomeMessage = () => {
+    const greeting = getTimeBasedGreeting();
+    const name = userData?.name || 'there';
+    
+    let welcomeMessage = `${greeting}, ${name}! I'm your personal resilience assistant.`;
+    
+    // If user has challenges, add personalized progress info
+    if (userData?.challenges && userData.challenges.length > 0) {
+      const totalChallenges = userData.challenges.length;
+      const activeChallenges = userData.challenges.filter(c => c.completedDays > 0).length;
+      
+      if (activeChallenges > 0) {
+        welcomeMessage += ` You're working on ${activeChallenges} active ${activeChallenges === 1 ? 'challenge' : 'challenges'}.`;
+        
+        // Find most progressed challenge
+        const mostProgressed = [...userData.challenges].sort((a, b) => 
+          (b.completedDays / b.duration) - (a.completedDays / a.duration)
+        )[0];
+        
+        if (mostProgressed && (mostProgressed.completedDays / mostProgressed.duration) > 0.5) {
+          welcomeMessage += ` You're making great progress with your ${mostProgressed.name} challenge!`;
+        }
+      } else {
+        welcomeMessage += ` You have ${totalChallenges} ${totalChallenges === 1 ? 'challenge' : 'challenges'} set up.`;
+      }
+    }
+    
+    welcomeMessage += ` How can I help you today?`;
+    return welcomeMessage;
+  };
+
+  const starterQuestions = useMemo(() => getPersonalizedStarterQuestions(), [userData?.challenges]);
 
   useEffect(() => {
     if (open && messages.length === 0) {
@@ -84,7 +265,7 @@ const ChatAssistant: React.FC<ChatAssistantProps> = ({ userData }) => {
         setMessages([
           {
             id: Date.now().toString(),
-            content: `Hi ${userData?.name || 'there'}! I'm your resilience assistant. How can I help you with your challenges today?`,
+            content: getPersonalizedWelcomeMessage(),
             sender: 'assistant',
             timestamp: new Date()
           }
@@ -94,7 +275,7 @@ const ChatAssistant: React.FC<ChatAssistantProps> = ({ userData }) => {
         setHasError(true);
       }
     }
-  }, [open, userData?.name, messages.length]);
+  }, [open, userData?.name, messages.length, userData?.challenges]);
 
   useEffect(() => {
     try {
@@ -105,6 +286,7 @@ const ChatAssistant: React.FC<ChatAssistantProps> = ({ userData }) => {
     }
   }, [messages]);
 
+  // Modify handleSendMessage to use RAG
   const handleSendMessage = async () => {
     if (!newMessage.trim()) return;
 
@@ -120,17 +302,95 @@ const ChatAssistant: React.FC<ChatAssistantProps> = ({ userData }) => {
     setIsLoading(true);
 
     try {
+      if (!API_KEY) {
+        throw new Error('Gemini API key is not configured.');
+      }
+
+      // Get relevant context from Pinecone
+      const relevantContext = await getRelevantContext(newMessage, userData.uid);
+      
+      const today = new Date();
+      const todayKey = getLocalDateKey(today);
+      
       // Create context from user data
       const userDataContext = {
         name: userData?.name || 'User',
-        challenges: (userData?.challenges || []).map(c => ({
-          name: c.name,
-          duration: c.duration,
-          completedDays: c.completedDays,
-          progress: Math.floor((c.completedDays / c.duration) * 100)
-        })),
-        hasReflectionToday: Boolean(userData?.dailyNotes && userData.dailyNotes[new Date().toISOString().split('T')[0]])
+        challenges: (userData?.challenges || []).map(c => {
+          // Get today's day number for this challenge
+          const todayDayNum = getTodayDayNumber(c);
+          // Check if the challenge has a note for today's day number
+          const hasLoggedToday = c.notes && c.notes[todayDayNum] !== undefined;
+          
+          return {
+            name: c.name,
+            duration: c.duration,
+            completedDays: c.completedDays,
+            progress: Math.floor((c.completedDays / c.duration) * 100),
+            streak: getStreakForChallenge(c),
+            hasLoggedToday: hasLoggedToday,
+            lastLoggedDate: c.notes ? 
+              Object.keys(c.notes)
+                .sort((a, b) => parseInt(b) - parseInt(a))
+                .map(dayNum => {
+                  const date = new Date(c.startDate);
+                  date.setDate(date.getDate() + parseInt(dayNum) - 1);
+                  return date.toISOString();
+                })[0] || null 
+              : null
+          };
+        }),
+        hasReflectionToday: Boolean(userData?.dailyNotes && userData.dailyNotes[todayKey]),
+        todayNote: userData?.dailyNotes && userData.dailyNotes[todayKey] ? userData.dailyNotes[todayKey] : null,
+        timeOfDay: getTimeBasedGreeting().split(' ')[1].toLowerCase(), // morning, afternoon, or evening
+        previousMessages: messages.slice(-4).map(m => ({ role: m.sender, content: m.content })),
+        // Organize notes by recency
+        notes: {
+          today: userData?.dailyNotes && userData.dailyNotes[todayKey] ? {
+            content: userData.dailyNotes[todayKey],
+            dateFormatted: today.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
+          } : null,
+          // Convert to array of {date, content} objects, sorted by date (recent first, excluding today)
+          previous: userData?.dailyNotes ? 
+            Object.entries(userData.dailyNotes)
+              .filter(([dateKey]) => dateKey !== todayKey)
+              .map(([dateKey, content]) => {
+                const noteDate = new Date(dateKey);
+                return {
+                  content,
+                  dateKey,
+                  dateFormatted: noteDate.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }),
+                  daysAgo: Math.floor((today.getTime() - noteDate.getTime()) / (1000 * 60 * 60 * 24))
+                };
+              })
+              .sort((a, b) => a.daysAgo - b.daysAgo) 
+            : [],
+        },
+        challengeNotes: (userData?.challenges || []).reduce((acc: Record<string, any>, challenge: Challenge) => {
+          if (challenge.notes) {
+            acc[challenge.id] = challenge.notes;
+          }
+          return acc;
+        }, {}),
+        currentDate: new Date().toISOString(),
+        currentDateFormatted: new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }),
+        relevantHistory: relevantContext ? relevantContext.matches : [], // Add retrieved context
       };
+
+      // Modify the prompt to include retrieved context
+      const prompt = `You are a personal resilience coach assistant. The user's name is ${userData?.name || 'there'}. 
+      Today's date is ${new Date().toLocaleDateString()}.
+      
+      Relevant past context:
+      ${relevantContext?.matches.map((match: any) => 
+        `- ${match.metadata.type}: ${match.content} (${new Date(match.metadata.date).toLocaleDateString()})`
+      ).join('\n') || 'No relevant past context found.'}
+      
+      Current user data: ${JSON.stringify(userDataContext)}
+      
+      The user said: ${newMessage}
+      
+      Provide a helpful, encouraging, and personalized response that references relevant past experiences and progress when appropriate.
+      Keep your response under 200 words and friendly in tone.`;
 
       const response = await fetch(`${API_URL}?key=${API_KEY}`, {
         method: 'POST',
@@ -143,12 +403,7 @@ const ChatAssistant: React.FC<ChatAssistantProps> = ({ userData }) => {
               role: 'user',
               parts: [
                 {
-                  text: `You are a resilience coach assistant. The user's name is ${userData?.name || 'there'}. 
-                  Here's the current user data: ${JSON.stringify(userDataContext)}. 
-                  The user said: ${newMessage}. 
-                  Provide a helpful, encouraging, and concise response focused on building resilience, 
-                  personal growth, and habit formation. Keep your response under 200 words.
-                  Format your response in clear paragraphs with proper spacing.`
+                  text: prompt
                 }
               ]
             }
@@ -203,7 +458,7 @@ const ChatAssistant: React.FC<ChatAssistantProps> = ({ userData }) => {
     setMessages([
       {
         id: Date.now().toString(),
-        content: `Hi ${userData?.name || 'there'}! I'm your resilience assistant. How can I help you with your challenges today?`,
+        content: getPersonalizedWelcomeMessage(),
         sender: 'assistant',
         timestamp: new Date()
       }
@@ -296,7 +551,7 @@ const ChatAssistant: React.FC<ChatAssistantProps> = ({ userData }) => {
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <SmartToyIcon />
               <Typography variant="subtitle1" fontWeight={600}>
-                Resilience Assistant
+                {userData?.name ? `${userData.name}'s Assistant` : 'Resilience Assistant'}
               </Typography>
             </Box>
             <Box sx={{ display: 'flex', gap: 1 }}>
@@ -439,7 +694,7 @@ const ChatAssistant: React.FC<ChatAssistantProps> = ({ userData }) => {
                         opacity: 0.7,
                       }}
                     >
-                      {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {message.timestamp.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </Typography>
                     <IconButton 
                       size="small" 

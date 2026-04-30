@@ -4,7 +4,7 @@ export interface Challenge {
   duration: number;
   startDate: string;
   completedDays: number;
-  notes: { [key: number]: string };
+  notes: { [key: string]: string };
 }
 
 export interface User {

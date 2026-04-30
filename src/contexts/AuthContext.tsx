@@ -8,11 +8,17 @@ import {
   updateProfile,
   sendEmailVerification,
   updatePassword as updateFirebasePassword,
+  setPersistence,
+  browserLocalPersistence,
+  getRedirectResult,
   User,
   Auth,
   UserCredential
 } from 'firebase/auth';
-import { auth } from '../config/firebase';
+import { auth } from '../services/firebase';
+
+// Store auth state in localStorage to help with persistence
+const AUTH_STATE_KEY = 'resilience_hub_auth_state';
 
 interface AuthContextType {
   auth: Auth;
@@ -43,28 +49,77 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   async function signup(email: string, password: string) {
-    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-    if (userCredential.user) {
-      await sendEmailVerification(userCredential.user);
+    // Set persistence first
+    try {
+      await setPersistence(auth, browserLocalPersistence);
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      if (userCredential.user) {
+        await sendEmailVerification(userCredential.user);
+        console.log('User created and verification email sent');
+      }
+    } catch (error) {
+      console.error('Error in signup:', error);
+      throw error;
     }
   }
 
   async function register(email: string, password: string, name: string) {
-    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-    const user = userCredential.user;
-    if (user) {
-      await updateProfile(user, { displayName: name });
-      await sendEmailVerification(user);
-      return user;
+    try {
+      // Set persistence first
+      await setPersistence(auth, browserLocalPersistence);
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      const user = userCredential.user;
+      if (user) {
+        await updateProfile(user, { displayName: name });
+        await sendEmailVerification(user);
+        console.log('User registered with name:', name);
+        return user;
+      }
+      throw new Error('User creation failed');
+    } catch (error) {
+      console.error('Error in register:', error);
+      throw error;
     }
-    throw new Error('User creation failed');
   }
 
   const login = async (email: string, password: string) => {
-    return signInWithEmailAndPassword(auth, email, password);
+    try {
+      console.log('Attempting login with persistence for:', email);
+      // Set persistence first
+      await setPersistence(auth, browserLocalPersistence);
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      
+      // Check if email is verified
+      if (userCredential.user && !userCredential.user.emailVerified) {
+        // Send a new verification email
+        await sendEmailVerification(userCredential.user);
+        console.log('Email not verified, sent verification email');
+        throw new Error('email-not-verified');
+      }
+      
+      console.log('Login successful, user:', userCredential.user.email);
+      // Store authentication state in localStorage
+      try {
+        localStorage.setItem(AUTH_STATE_KEY, 'true');
+      } catch (e) {
+        console.warn('Could not store auth state in localStorage:', e);
+      }
+      
+      return userCredential;
+    } catch (error) {
+      console.error('Error in login:', error);
+      throw error;
+    }
   };
 
   function logout() {
+    // Clear the localStorage state
+    try {
+      localStorage.removeItem(AUTH_STATE_KEY);
+    } catch (e) {
+      console.warn('Could not remove auth state from localStorage:', e);
+    }
+    console.log('Logging out user');
     return signOut(auth);
   }
 
@@ -94,12 +149,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   useEffect(() => {
+    console.log('AuthContext: Setting up auth state listener');
+    
+    // Try to get any redirect result first
+    getRedirectResult(auth).catch(error => 
+      console.warn('Error with redirect result:', error)
+    );
+    
+    // Check if we have a stored auth state
+    try {
+      const storedAuthState = localStorage.getItem(AUTH_STATE_KEY);
+      console.log('Stored auth state:', storedAuthState);
+    } catch (e) {
+      console.warn('Could not read auth state from localStorage:', e);
+    }
+    
     const unsubscribe = onAuthStateChanged(auth, (user) => {
+      console.log('Auth state changed:', user ? `User: ${user.email}` : 'No user');
+      
       setCurrentUser(user);
       setLoading(false);
+      
+      // If we have a user, store that in localStorage
+      try {
+        if (user) {
+          localStorage.setItem(AUTH_STATE_KEY, 'true');
+        } else {
+          localStorage.removeItem(AUTH_STATE_KEY);
+        }
+      } catch (e) {
+        console.warn('Could not update localStorage auth state:', e);
+      }
     });
 
-    return unsubscribe;
+    return () => {
+      console.log('Unsubscribing from auth state changes');
+      unsubscribe();
+    };
   }, []);
 
   const value = {

@@ -19,6 +19,7 @@ import VisibilityIcon from '@mui/icons-material/Visibility';
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import { useAuth } from '../contexts/AuthContext';
 import { createUserDocument } from '../services/firestore';
+import { User } from '../types';
 
 const RegisterPage: React.FC = () => {
   const [name, setName] = useState('');
@@ -39,6 +40,8 @@ const RegisterPage: React.FC = () => {
   });
   const [isPasswordFocused, setIsPasswordFocused] = useState(false);
   
+  // navigate is needed for potential programmatic navigation
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const navigate = useNavigate();
   const { register } = useAuth();
 
@@ -78,7 +81,8 @@ const RegisterPage: React.FC = () => {
       console.log("Registration successful:", user);
       
       // Create initial user data in Firestore
-      const userData = {
+      const userData: User = {
+        uid: user.uid,
         name,
         challenges: [],
         dailyNotes: {}
@@ -90,7 +94,7 @@ const RegisterPage: React.FC = () => {
       setVerificationSent(true);
       
       // No automatic redirect - user must verify first
-    } catch (err: any) {
+    } catch (err: any) { // eslint-disable-line @typescript-eslint/no-explicit-any
       console.error("Registration error:", err);
       setError(
         err.code === 'auth/email-already-in-use' ? 'Email is already in use' :
@@ -150,13 +154,13 @@ const RegisterPage: React.FC = () => {
               Verification Required
             </Typography>
             <Typography variant="body1" sx={{ mb: 2 }}>
-              We've sent a verification email to <strong>{email}</strong>.
+              We&apos;ve sent a verification email to <strong>{email}</strong>.
             </Typography>
             <Typography variant="body1" sx={{ mb: 3 }}>
               Please check your inbox and verify your email address before logging in.
             </Typography>
             <Alert severity="info" sx={{ mb: 3, mx: 'auto', maxWidth: '90%' }}>
-              You must verify your email before you can access the dashboard.
+              You must verify your email before you can access.
             </Alert>
             <Button 
               variant="contained"
@@ -167,24 +171,10 @@ const RegisterPage: React.FC = () => {
                 '&:hover': {
                   bgcolor: '#2a9d8f'
                 },
-                mr: 2
+                minWidth: '160px'
               }}
             >
               Go to Login
-            </Button>
-            <Button 
-              variant="outlined"
-              onClick={() => window.location.reload()}
-              sx={{ 
-                borderColor: '#ff9f1c',
-                color: '#ff9f1c',
-                '&:hover': {
-                  borderColor: '#f9844a',
-                  bgcolor: 'rgba(249, 132, 74, 0.04)'
-                }
-              }}
-            >
-              Register Another Account
             </Button>
           </Box>
         ) : (

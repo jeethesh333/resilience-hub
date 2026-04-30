@@ -40,6 +40,10 @@ firebase-debug.*.log*
 # Testing
 /coverage
 
+# Python
+__pycache__/
+*.py[cod]
+
 # Misc
 *.pem
 .vercel

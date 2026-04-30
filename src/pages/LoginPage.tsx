@@ -6,7 +6,6 @@ import {
   Typography,
   TextField,
   Button,
-  Grid,
   Box,
   Alert,
   Avatar,
@@ -28,6 +27,8 @@ const LoginPage: React.FC = () => {
   const [verificationNeeded, setVerificationNeeded] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   
+  // navigate is required for potential programmatic navigation but currently used via window.location.href
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const navigate = useNavigate();
   const { login, resetPassword } = useAuth();
 
@@ -167,14 +168,14 @@ const LoginPage: React.FC = () => {
           <Alert severity="success" sx={{ mb: 3, borderRadius: 2 }}>
             Password reset link has been sent to <strong>{email}</strong>. 
             Please check your inbox and follow the instructions to reset your password.
-            If you don't see the email, check your spam folder.
+            If you don&apos;t see the email, check your spam folder.
           </Alert>
         )}
 
         {verificationNeeded && (
           <Alert severity="warning" sx={{ mb: 3, borderRadius: 2 }}>
             Your email address has not been verified. 
-            We've sent a new verification email to <strong>{email}</strong>. 
+            We&apos;ve sent a new verification email to <strong>{email}</strong>. 
             Please check your inbox and verify your email before logging in.
           </Alert>
         )}
@@ -243,30 +244,42 @@ const LoginPage: React.FC = () => {
             )}
           </Button>
           
-          <Grid container>
-            <Grid item xs>
-              <Button 
-                variant="text" 
-                size="small" 
-                onClick={handleForgotPassword}
-                disabled={loading}
-                sx={{ fontSize: '0.8rem' }}
-              >
-                Forgot password?
-              </Button>
-            </Grid>
-            <Grid item>
-              <Button 
-                component={Link} 
-                to="/register" 
-                variant="text" 
-                size="small"
-                sx={{ fontSize: '0.8rem' }}
-              >
-                Don't have an account? Sign Up
-              </Button>
-            </Grid>
-          </Grid>
+          <Box 
+            sx={{ 
+              display: 'flex', 
+              flexDirection: { xs: 'column', sm: 'row' },
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: { xs: 2, sm: 0 },
+              mt: 2
+            }}
+          >
+            <Button
+              onClick={handleForgotPassword}
+              sx={{
+                color: '#2ec4b6',
+                textTransform: 'none',
+                '&:hover': {
+                  bgcolor: 'rgba(46, 196, 182, 0.08)'
+                }
+              }}
+            >
+              Forgot password?
+            </Button>
+            <Button
+              component={Link}
+              to="/register"
+              sx={{
+                color: '#2ec4b6',
+                textTransform: 'none',
+                '&:hover': {
+                  bgcolor: 'rgba(46, 196, 182, 0.08)'
+                }
+              }}
+            >
+              Don&apos;t have an account? Sign Up
+            </Button>
+          </Box>
         </Box>
       </Paper>
     </Container>

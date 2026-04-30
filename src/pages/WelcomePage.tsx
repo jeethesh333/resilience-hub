@@ -12,7 +12,7 @@ import {
   Alert
 } from '@mui/material';
 import LocalFireDepartmentIcon from '@mui/icons-material/LocalFireDepartment';
-import { auth } from '../config/firebase';
+import auth from '../services/firebase';
 
 const WelcomePage: React.FC = () => {
   const [loading, setLoading] = useState(true);

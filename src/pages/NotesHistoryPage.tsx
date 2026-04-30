@@ -15,8 +15,6 @@ import {
   Grid,
   Card,
   CardContent,
-  IconButton,
-  Tooltip,
   Avatar,
   Chip,
   Fade,
@@ -192,33 +190,40 @@ const NotesHistoryPage: React.FC = () => {
     return Object.entries(userData?.dailyNotes || {})
       .filter(([date]) => {
         if (!isFiltering) return true;
-        
-        const noteDate = new Date(date);
+        // Parse as local date
+        const [year, month, day] = date.split('-');
+        const noteDate = new Date(Number(year), Number(month) - 1, Number(day));
         let isAfterStart = true;
         let isBeforeEnd = true;
-        
         if (startDateStr) {
-          // Create date from string input
-          const startDate = new Date(startDateStr);
+          const [sy, sm, sd] = startDateStr.split('-');
+          const startDate = new Date(Number(sy), Number(sm) - 1, Number(sd));
           startDate.setHours(0, 0, 0, 0);
           isAfterStart = noteDate >= startDate;
         }
-        
         if (endDateStr) {
-          // Create date from string input
-          const endDate = new Date(endDateStr);
+          const [ey, em, ed] = endDateStr.split('-');
+          const endDate = new Date(Number(ey), Number(em) - 1, Number(ed));
           endDate.setHours(23, 59, 59, 999);
           isBeforeEnd = noteDate <= endDate;
         }
-        
         return isAfterStart && isBeforeEnd;
       })
-      .sort(([dateA], [dateB]) => new Date(dateB).getTime() - new Date(dateA).getTime())
-      .map(([dateStr, note]) => ({ 
-        dateStr,
-        date: new Date(dateStr),
-        note 
-      }));
+      .sort(([dateA], [dateB]) => {
+        // Parse as local date
+        const [yA, mA, dA] = dateA.split('-');
+        const [yB, mB, dB] = dateB.split('-');
+        return new Date(Number(yB), Number(mB) - 1, Number(dB)).getTime() - new Date(Number(yA), Number(mA) - 1, Number(dA)).getTime();
+      })
+      .map(([dateStr, note]) => {
+        // Parse as local date
+        const [year, month, day] = dateStr.split('-');
+        return {
+          dateStr,
+          date: new Date(Number(year), Number(month) - 1, Number(day)),
+          note
+        };
+      });
   };
 
   // Get filtered challenge notes
@@ -230,31 +235,23 @@ const NotesHistoryPage: React.FC = () => {
       .sort(([dayA], [dayB]) => Number(dayB) - Number(dayA))
       .filter(([day]) => {
         if (!isFiltering) return true;
-        
         // Calculate the actual date from the challenge start date and day number
         const dayNumber = parseInt(day);
         const challengeStartDate = new Date(challenge.startDate);
         const noteDate = new Date(challengeStartDate);
-        // Add (dayNumber - 1) to get the actual date of that day
+        noteDate.setHours(0, 0, 0, 0);
         noteDate.setDate(challengeStartDate.getDate() + (dayNumber - 1));
-        
+        // Format noteDate as YYYY-MM-DD
+        const noteDateKey = `${noteDate.getFullYear()}-${String(noteDate.getMonth() + 1).padStart(2, '0')}-${String(noteDate.getDate()).padStart(2, '0')}`;
         let isAfterStart = true;
         let isBeforeEnd = true;
-        
         if (startDateStr) {
-          // Create date from string input
-          const startDate = new Date(startDateStr);
-          startDate.setHours(0, 0, 0, 0);
-          isAfterStart = noteDate >= startDate;
+          // Compare as YYYY-MM-DD
+          isAfterStart = noteDateKey >= startDateStr;
         }
-        
         if (endDateStr) {
-          // Create date from string input
-          const endDate = new Date(endDateStr);
-          endDate.setHours(23, 59, 59, 999);
-          isBeforeEnd = noteDate <= endDate;
+          isBeforeEnd = noteDateKey <= endDateStr;
         }
-        
         return isAfterStart && isBeforeEnd;
       })
       .map(([day, note]) => {
@@ -262,9 +259,8 @@ const NotesHistoryPage: React.FC = () => {
         const dayNumber = parseInt(day);
         const challengeStartDate = new Date(challenge.startDate);
         const noteDate = new Date(challengeStartDate);
-        // Add (dayNumber - 1) to get the actual date of that day
+        noteDate.setHours(0, 0, 0, 0);
         noteDate.setDate(challengeStartDate.getDate() + (dayNumber - 1));
-        
         return {
           day,
           note,
@@ -318,48 +314,12 @@ const NotesHistoryPage: React.FC = () => {
 
   return (
     <Container maxWidth="lg">
-      <Box sx={{ py: 4 }}>
-        <Fade in={true} timeout={800}>
-          <Box sx={{ display: 'flex', alignItems: 'center', mb: 4 }}>
-            <Tooltip title="Back to Dashboard">
-              <IconButton 
-                onClick={() => navigate('/dashboard')}
-                sx={{ 
-                  mr: 2, 
-                  bgcolor: 'rgba(58, 134, 255, 0.05)',
-                  '&:hover': {
-                    bgcolor: 'rgba(58, 134, 255, 0.1)',
-                  }
-                }}
-              >
-                <ArrowBackIcon />
-              </IconButton>
-            </Tooltip>
-            <Typography 
-              variant="h4" 
-              component="h1"
-              sx={{ 
-                fontWeight: 700,
-                background: 'linear-gradient(90deg, #3a86ff, #8338ec)',
-                backgroundClip: 'text',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 1
-              }}
-            >
-              <EditNoteIcon sx={{ fontSize: 32 }} />
-              Notes History
-            </Typography>
-          </Box>
-        </Fade>
-
-        {/* Date Range Filter - Common to both tabs */}
+      <Box sx={{ py: 0 }}>
         <Paper
           sx={{
             p: 3,
             mb: 3,
+            mt: 0,
             borderRadius: 3,
             boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)'
           }}
@@ -459,24 +419,28 @@ const NotesHistoryPage: React.FC = () => {
                 fontWeight: 600,
                 textTransform: 'none',
                 minHeight: 60,
-                fontSize: '1rem'
+                fontSize: { xs: '0.92rem', sm: '1rem' },
+                px: { xs: 0.5, sm: 2 },
+                minWidth: 0,
+                flex: 1,
+                maxWidth: '100%',
               }
             }}
             centered
           >
             <Tab 
               label={
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <CalendarMonthIcon fontSize="small" />
-                  <span>Daily Reflections</span>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 0.5, sm: 1 } }}>
+                  <CalendarMonthIcon fontSize="small" sx={{ fontSize: { xs: 18, sm: 20 } }} />
+                  <span style={{ fontSize: 'inherit', whiteSpace: 'nowrap' }}>Daily Reflections</span>
                 </Box>
               } 
             />
             <Tab 
               label={
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <FitnessCenterIcon fontSize="small" />
-                  <span>Challenge Notes</span>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 0.5, sm: 1 } }}>
+                  <FitnessCenterIcon fontSize="small" sx={{ fontSize: { xs: 18, sm: 20 } }} />
+                  <span style={{ fontSize: 'inherit', whiteSpace: 'nowrap' }}>Challenge Notes</span>
                 </Box>
               } 
             />
@@ -525,13 +489,13 @@ const NotesHistoryPage: React.FC = () => {
                                     gutterBottom
                                     sx={{ lineHeight: 1.2 }}
                                   >
-                                    {new Date(date).toLocaleDateString(undefined, { 
+                                    {date.toLocaleDateString(undefined, { 
                                       month: 'short', 
                                       day: 'numeric' 
                                     })}
                                   </Typography>
                                   <Typography variant="caption" color="text.secondary">
-                                    {new Date(date).toLocaleDateString(undefined, { 
+                                    {date.toLocaleDateString(undefined, { 
                                       weekday: 'long',
                                       year: 'numeric'
                                     })}
@@ -806,7 +770,7 @@ const NotesHistoryPage: React.FC = () => {
                                   color: 'text.secondary'
                                 }}
                               >
-                                {note}
+                                {note?.content}
                               </Typography>
                             </Paper>
                           </Zoom>
